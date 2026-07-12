@@ -48,7 +48,7 @@ DENIED_GIT_SUBCOMMANDS: tuple[str, ...] = (
 
 
 def normalize_execution_profile(value: str | None) -> str:
-    normalized = (value or "ro").strip().lower()
+    normalized = (value or "rw").strip().lower()
     if normalized not in EXECUTION_PROFILES:
         raise ValueError("execution profile must be ro or rw")
     return normalized

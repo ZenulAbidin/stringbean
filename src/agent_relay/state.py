@@ -109,7 +109,7 @@ def create_new_run(
     task: str,
     run_limit: int,
     selected_agents: Dict[str, str],
-    execution_profile: str = "ro",
+    execution_profile: str = "rw",
 ) -> RunDirectory:
     rd = RunDirectory(root, run_id)
     if rd.path.exists():

@@ -6,7 +6,7 @@ import os
 import subprocess
 
 from agent_relay.config import AgentConfig, Config, RepositoryConfig, WorkflowConfig, OutputConfig, load_config, save_config
-from agent_relay.policy import apply_codex_execution_profile, install_command_policy_wrappers
+from agent_relay.policy import apply_codex_execution_profile, install_command_policy_wrappers, normalize_execution_profile
 from agent_relay.parser import parse_structured_output
 from agent_relay.models import ImplementerResponse, OrchestratorPlan, ReviewerResponse
 def test_config_roundtrip_and_validation(tmp_path: Path):
@@ -132,6 +132,10 @@ def test_codex_execution_profile_flags_are_forced():
 
     rw = apply_codex_execution_profile(base, "rw")
     assert rw[:6] == ["codex", "--ask-for-approval", "never", "--sandbox", "danger-full-access", "exec"]
+
+
+def test_execution_profile_default_is_rw():
+    assert normalize_execution_profile(None) == "rw"
 
 
 def test_policy_wrapper_blocks_denied_command(tmp_path: Path):

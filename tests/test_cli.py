@@ -42,6 +42,7 @@ def test_sbx_accepts_unquoted_prompt_words():
     assert result.returncode == 0, result.stderr
     assert "enumerate-bugs" in result.stdout
     assert "'dry_run': True" in result.stdout
+    assert "'execution_profile': 'rw'" in result.stdout
 
 
 def test_sbx_codex_final_emits_sentinel_block():

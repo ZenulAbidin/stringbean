@@ -13,13 +13,14 @@ Usage:
 
 Examples:
   sbx inspect the docs
-  sbx "Add a typo fix in docs" --rw
-  sbx run "Build retry logic" --rw --mode high
+  sbx "Add a typo fix in docs"
+  sbx run "Build retry logic" --mode high
+  sbx "Inspect without modifying existing files" --ro
   sbx "Quietly inspect the repo" --no-agent-stream
   sbx "Inspect through Codex TUI" --codex-final
   sbx "Audit without retrying policy violations" --policy-retries 0
   sbx "Inspect through Codex TUI silently" --codex-final --no-codex-progress
-  stringbean sbx "Build retry logic" --rw --mode high
+  stringbean sbx "Build retry logic" --mode high
 EOF
 }
 

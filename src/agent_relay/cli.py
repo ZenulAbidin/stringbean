@@ -772,9 +772,9 @@ def run(
     advisor_mode: Optional[str] = typer.Option(None, "--advisor-mode"),
     implementer_mode: Optional[str] = typer.Option(None, "--implementer-mode"),
     reviewer_mode: Optional[str] = typer.Option(None, "--reviewer-mode"),
-    execution_profile: str = typer.Option("ro", "--profile", help="Execution profile: ro or rw. Default ro blocks repository writes."),
-    ro: bool = typer.Option(False, "--ro", "-ro", help="Read-only execution profile. This is the default."),
-    rw: bool = typer.Option(False, "--rw", "-rw", help="Read-write execution profile. Allows write-capable agents to modify files."),
+    execution_profile: str = typer.Option("rw", "--profile", help="Execution profile: ro or rw. Default rw lets write-capable agents modify files."),
+    ro: bool = typer.Option(False, "--ro", "-ro", help="Read-only create-only execution profile."),
+    rw: bool = typer.Option(False, "--rw", "-rw", help="Read-write execution profile. This is the default."),
     max_review_rounds: Optional[int] = typer.Option(None, "--max-review-rounds"),
     policy_retries: Optional[int] = typer.Option(
         None,
@@ -914,7 +914,7 @@ def resume(
         console.print("Run already completed.")
         return
     if execution_profile is None:
-        execution_profile = state.state.execution_profile or "ro"
+        execution_profile = state.state.execution_profile or "rw"
     resolved_execution_profile = _resolve_execution_profile(execution_profile, ro, rw)
     console.print(f"Resuming run {run_id} at stage {state.state.stage.value}")
     console.print(f"Execution profile: {resolved_execution_profile}")

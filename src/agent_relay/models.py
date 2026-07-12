@@ -144,7 +144,7 @@ class RunStateModel(BaseModel):
     stage: RunStatus = RunStatus.RECEIVED
     review_round: int = 0
     selected_agents: Dict[str, str] = Field(default_factory=dict)
-    execution_profile: str = "ro"
+    execution_profile: str = "rw"
     plan_id: Optional[str] = None
     implemented_task_ids: List[str] = Field(default_factory=list)
     advisory_blocks: int = 0

@@ -16,6 +16,7 @@ def test_state_is_written_atomically(tmp_path):
         selected_agents={},
     )
     state = RunState.load(run_dir.state_path)
+    assert state.state.execution_profile == "rw"
     for status in [RunStatus.PLANNING, RunStatus.IMPLEMENTING, RunStatus.COMPLETED]:
         state.state.mark(status, datetime.now(timezone.utc))
         state.state.task = "changed"

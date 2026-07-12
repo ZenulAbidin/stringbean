@@ -63,7 +63,7 @@ pip install -e .
 stringbean init
 stringbean doctor
 stringbean run "Inspect lightweight input validation in API endpoint"
-stringbean run "Implement lightweight input validation in API endpoint" --rw
+stringbean run "Implement lightweight input validation in API endpoint"
 stringbean status
 stringbean logs <run-id>
 ```
@@ -73,12 +73,12 @@ For the lightweight slash-style flow from any directory, use the repo wrapper:
 ```bash
 # from any directory
 ~/Documents/stringbean/scripts/sbx "Inspect feature X"
-~/Documents/stringbean/scripts/sbx "Implement feature X" --rw
+~/Documents/stringbean/scripts/sbx "Implement feature X"
 # or explicitly:
-~/Documents/stringbean/scripts/stringbean sbx "Implement feature X" --rw
+~/Documents/stringbean/scripts/stringbean sbx "Implement feature X"
 # or, after sourcing the hook below:
 # source ~/Documents/stringbean/scripts/sbx-zsh-hook.zsh
-stringbean sbx "Implement feature X" --rw
+stringbean sbx "Implement feature X"
 ```
 
 If `stringbean` points to `~/.local/bin/stringbean`, it may be an old shim and can pick the wrong Python.
@@ -120,8 +120,8 @@ stringbean run --dry-run "Implement auth checks"
   - `--mode auto|high|medium|low` (default `auto`)
   - `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, `--reviewer-mode`
   - `--profile ro|rw`, `--ro`, `--rw`
-    - `ro` is the default create-only profile: subagents can inspect, run commands, and create new files/directories, but modifications, deletes, renames, moves, or type changes to pre-existing repository paths are treated as policy violations and rolled back where safe.
-    - `rw` lets write-capable agents modify files. Read-only roles are still diff-checked.
+    - `rw` is the default profile: write-capable agents may modify files in service of the task. Read-only roles are still diff-checked.
+    - `ro` is the create-only profile: subagents can inspect, run commands, and create new files/directories, but modifications, deletes, renames, moves, or type changes to pre-existing repository paths are treated as policy violations and rolled back where safe.
     - Codex agents are launched with explicit approval/sandbox flags instead of inherited defaults: `ro` uses workspace-write with Stringbean diff enforcement; `rw` uses danger-full-access at the provider layer while Stringbean still diff-checks read-only roles.
     - Subagents receive a Stringbean denylist for destructive commands such as `rm`, `sudo`, `dd`, `mkfs`, `shutdown`, and destructive git operations such as `git reset`, `git clean`, and `git push`.
   - `--policy-retries N`
@@ -145,7 +145,7 @@ stringbean run --dry-run "Implement auth checks"
 - `scripts/stringbean` is a local shim that always routes into repo code.
 
 ```bash
-~/Documents/stringbean/scripts/stringbean run "Quick task" --rw
+~/Documents/stringbean/scripts/stringbean run "Quick task"
 ```
 
 ### Codex quick command (slash-style)
@@ -154,8 +154,9 @@ You can run the local wrapper as a one-off command from the repo:
 
 ```bash
 ./scripts/sbx "Inspect validation in signup endpoint" --mode auto
-./scripts/sbx "Fix validation in signup endpoint" --rw --mode auto
-./scripts/sbx "Refactor auth flow" --rw --mode high
+./scripts/sbx "Fix validation in signup endpoint" --mode auto
+./scripts/sbx "Refactor auth flow" --mode high
+./scripts/sbx "Inspect without modifying existing files" --ro
 ```
 
 If you want it as a slash command in your UI, map `/sbx` to run:
@@ -173,7 +174,7 @@ source ~/Documents/stringbean/scripts/sbx-zsh-hook.zsh
 Then type:
 
 ```bash
-/sbx "Fix login validation bug" --rw --mode high
+/sbx "Fix login validation bug" --mode high
 ```
 
 If `sbx` is still being resolved to an old global script, this hook also defines a `sbx` shell function so `sbx ...` always uses the repo-local wrapper.
@@ -192,7 +193,7 @@ Then restart Codex or open a new task and invoke:
 
 ```text
 $sbx inspect whether README exists
-$sbx fix typo in README --rw --mode high
+$sbx fix typo in README --mode high
 ```
 
 If Codex displays the plugin-qualified skill name, choose `stringbean:sbx`.
@@ -217,7 +218,7 @@ Then restart Codex or open a new task and run:
 
 ```text
 /prompts:sbx inspect whether README exists
-/prompts:sbx fix typo in README --rw
+/prompts:sbx fix typo in README
 ```
 
 ## Release process

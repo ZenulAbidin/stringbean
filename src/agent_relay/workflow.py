@@ -142,7 +142,7 @@ class WorkflowEngine:
         run_state: RunState,
         console: Optional[Console] = None,
         quiet: bool = False,
-        execution_profile: str = "ro",
+        execution_profile: str = "rw",
         codex_progress: bool = False,
         progress_interval_seconds: float = 30.0,
     ) -> None:
