@@ -671,7 +671,11 @@ def _apply_output_flags(cfg: Config, quiet: bool, no_agent_stream: bool) -> None
         cfg.output.stream_agent_output = False
 
 
-def _print_run_summary(summary: dict, *, dry_run: bool) -> None:
+def _print_run_summary(summary: dict, *, dry_run: bool, codex_final: bool = False) -> None:
+    if codex_final:
+        _print_codex_final_summary(summary, dry_run=dry_run)
+        return
+
     if dry_run:
         console.print(summary)
         console.print("Dry run mode - no agents were launched.")
@@ -699,6 +703,36 @@ def _print_run_summary(summary: dict, *, dry_run: bool) -> None:
 
 def _print_labeled(label: str, value: str) -> None:
     console.print(Text.assemble((label, "bold white"), (": ", "bold white"), (value, "white")))
+
+
+def _print_codex_final_summary(summary: dict, *, dry_run: bool) -> None:
+    print("STRINGBEAN_RESULT_START")
+    if dry_run:
+        print("Status: DRY_RUN")
+        selected = summary.get("selected_agents")
+        if selected:
+            print(f"Selected agents: {selected}")
+        state_dir = summary.get("state_dir")
+        if state_dir:
+            print(f"Artifacts: {state_dir}")
+    else:
+        print(f"Status: {summary.get('status', 'UNKNOWN')}")
+        result = summary.get("result")
+        if result:
+            print(f"Result: {result}")
+        errors = summary.get("errors")
+        if errors:
+            print(f"Error: {errors}")
+        implemented = summary.get("implemented") or []
+        if implemented:
+            print(f"Tasks: {', '.join(str(item) for item in implemented)}")
+        review_round = summary.get("review_round")
+        if review_round is not None:
+            print(f"Review rounds: {review_round}")
+        event_log = summary.get("event_log")
+        if event_log:
+            print(f"Artifacts: {Path(str(event_log)).parent}")
+    print("STRINGBEAN_RESULT_END")
 
 
 def _resolve_execution_profile(profile: str, ro: bool, rw: bool) -> str:
@@ -739,6 +773,11 @@ def run(
         "--no-agent-stream",
         "--no-agent-output",
         help="Hide live provider agent stdout/stderr. Raw output is still retained in run artifacts.",
+    ),
+    codex_final: bool = typer.Option(
+        False,
+        "--codex-final",
+        help="Emit only a compact sentinel-wrapped final block for Codex custom prompts.",
     ),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
 ):
@@ -782,7 +821,7 @@ def run(
         raise typer.BadParameter("max-review-rounds must be 0 or higher.")
 
     _apply_overrides(cfg, orchestrator, advisor, implementer, reviewer)
-    _apply_output_flags(cfg, quiet=quiet, no_agent_stream=no_agent_stream)
+    _apply_output_flags(cfg, quiet=quiet or codex_final, no_agent_stream=no_agent_stream or codex_final)
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)
     try:
         out = _run_engine(
@@ -791,7 +830,7 @@ def run(
             run_id=selected_run_id,
             no_advisor=no_advisor,
             dry_run=dry_run,
-            quiet=quiet,
+            quiet=quiet or codex_final,
             max_review_rounds=max_review_rounds,
             mode=mode,
             role_modes=role_modes or None,
@@ -800,8 +839,9 @@ def run(
     except RuntimeError as exc:
         _print_run_failure(selected_run_id, task, exc)
         raise typer.Exit(code=1) from exc
-    _print_labeled("Run ID", str(out["run_id"]))
-    _print_run_summary(out["summary"], dry_run=dry_run)
+    if not codex_final:
+        _print_labeled("Run ID", str(out["run_id"]))
+    _print_run_summary(out["summary"], dry_run=dry_run, codex_final=codex_final)
 
 
 @app.command()

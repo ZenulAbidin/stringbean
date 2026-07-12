@@ -128,6 +128,7 @@ stringbean run --dry-run "Implement auth checks"
   - `--no-advisor`
   - `--dry-run`
   - `--no-agent-stream` / `--no-agent-output` hides the live provider stdout/stderr stream. By default Stringbean shows selective formatted provider output: prompt echoes and CLI boilerplate are suppressed, visible escapes such as `\n` are decoded, structured JSON answers are collapsed into readable result lines, tool output bodies are capped at three visible lines, terminal output uses TTY-aware bold/white labels, and raw stdout/stderr are still retained in run artifacts.
+  - `--codex-final` emits only a compact `STRINGBEAN_RESULT_START` / `STRINGBEAN_RESULT_END` block for Codex custom prompts to mirror into the visible final answer.
   - `--quiet`
   - `--run-id`
 - `stringbean resume RUN_ID`
@@ -174,6 +175,23 @@ Then type:
 ```
 
 If `sbx` is still being resolved to an old global script, this hook also defines a `sbx` shell function so `sbx ...` always uses the repo-local wrapper.
+
+### Codex custom prompt wrapper
+
+Codex collapses shell-command output into the transcript panel, so Stringbean includes a custom prompt wrapper that tells Codex to run `sbx --codex-final` and copy the sentinel-wrapped result into the visible final answer.
+
+Install it with:
+
+```bash
+scripts/install-codex-prompts.sh
+```
+
+Then restart Codex or open a new task and run:
+
+```text
+/prompts:sbx inspect whether README exists
+/prompts:sbx fix typo in README --rw
+```
 
 ## Release process
 
