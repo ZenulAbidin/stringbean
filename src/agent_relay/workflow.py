@@ -8,7 +8,6 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
-import sys
 from typing import Dict, List, Optional, Tuple, Type
 
 from rich.console import Console
@@ -151,6 +150,7 @@ class WorkflowEngine:
             existing = [p for p in self.run_dir.calls_dir.iterdir() if p.is_dir()]
             self.call_counter = len(existing)
         self.config_snapshot_written = False
+        self._agent_stream_open_line = False
 
         if self.run_dir.task_path.exists():
             self.state.state.task = self.run_dir.task_path.read_text(encoding="utf-8").strip()
@@ -158,9 +158,16 @@ class WorkflowEngine:
     def _log(self, message: str) -> None:
         if self.quiet:
             return
-        if not sys.stdout.isatty():
-            return
+        if self._agent_stream_open_line:
+            print("", flush=True)
+            self._agent_stream_open_line = False
         print(message, flush=True)
+
+    def _stream_agent_chunk(self, chunk: str) -> None:
+        if self.quiet or not chunk:
+            return
+        print(chunk, end="", flush=True)
+        self._agent_stream_open_line = not chunk.endswith(("\n", "\r"))
 
     def _mark(self, status: RunStatus, event: str, payload: Optional[Dict[str, object]] = None) -> None:
         self.state.state.mark(status, datetime.now(timezone.utc))
@@ -336,10 +343,6 @@ class WorkflowEngine:
         else:
             cfg_prompt = prompt
 
-        def cb(line: str) -> None:
-            if self.config.output.stream_agent_output:
-                self._log(line.rstrip("\n"))
-
         env_overrides = dict(agent.environment_overrides)
         if extra_env:
             env_overrides.update(extra_env)
@@ -349,7 +352,10 @@ class WorkflowEngine:
             env = dict(os.environ)
             env.update(env_overrides)
 
-        callback = cb if self.config.output.stream_agent_output and sys.stdout.isatty() else None
+        stream_agent_output = bool(self.config.output.stream_agent_output and not self.quiet)
+        if stream_agent_output:
+            self._log(f"[stringbean] starting {role} agent: {agent_name}")
+        callback = self._stream_agent_chunk if stream_agent_output else None
         try:
             result = await run_subprocess(
                 RunnerConfig(
@@ -366,6 +372,8 @@ class WorkflowEngine:
             raise RuntimeError(f"agent {agent_name} timed out") from exc
         except Exception as exc:
             raise RuntimeError(f"agent {agent_name} execution failed: {exc}") from exc
+        if stream_agent_output:
+            self._log(f"[stringbean] finished {role} agent: {agent_name} (exit {result.exit_code})")
 
         parse_error: Optional[str] = None
         model_payload = None

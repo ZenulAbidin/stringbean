@@ -5,14 +5,15 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  sbx "TASK" [--mode auto|low|medium|high] [stringbean run flags]
-  sbx run "TASK" [--mode auto|low|medium|high] [more flags]
-  stringbean sbx "TASK" [--mode auto|low|medium|high] [more flags]
-  stringbean run "TASK" [--mode auto|low|medium|high] [more flags]
+  sbx "TASK" [--mode auto|low|medium|high] [--no-agent-stream] [stringbean run flags]
+  sbx run "TASK" [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
+  stringbean sbx "TASK" [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
+  stringbean run "TASK" [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
 
 Examples:
   sbx "Add a typo fix in docs"
   sbx run "Build retry logic" --mode high
+  sbx "Quietly inspect the repo" --no-agent-stream
   stringbean sbx "Build retry logic" --mode high
 EOF
 }
@@ -251,6 +252,10 @@ FIRST_ARG="${1-}"
 TASK=""
 
 case "$FIRST_ARG" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
   sbx|run)
     if [[ $# -lt 2 ]]; then
       echo "Usage: $FIRST_ARG requires a task argument."

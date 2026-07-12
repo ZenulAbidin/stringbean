@@ -44,6 +44,9 @@ def _write_result(payload):
 role = os.environ.get("AGENT_ROLE", "orchestrator")
 repo_root = pathlib.Path.cwd()
 
+if os.environ.get("EMIT_STDERR_STATUS", "0") == "1":
+    print(f"stderr status from {role}", file=sys.stderr)
+
 if role == "planner":
     call = _count("planner")
     tasks = [

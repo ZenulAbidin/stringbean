@@ -16,6 +16,12 @@ def test_cli_help_available():
     assert "stringbean" in result.stdout or "agent-relay" in result.stdout
 
 
+def test_run_help_lists_agent_stream_switch():
+    result = runner.invoke(cli.app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--no-agent-stream" in result.stdout
+
+
 def test_init_and_status_cycle(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])

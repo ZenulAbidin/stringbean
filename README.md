@@ -120,6 +120,7 @@ stringbean run --dry-run "Implement auth checks"
   - `--max-review-rounds N`
   - `--no-advisor`
   - `--dry-run`
+  - `--no-agent-stream` / `--no-agent-output` hides the live provider stdout/stderr stream. By default Stringbean shows visible provider output such as status lines, tool calls, and reasoning summaries emitted by the provider CLI.
   - `--quiet`
   - `--run-id`
 - `stringbean resume RUN_ID`
@@ -340,4 +341,4 @@ Each run gets `.stringbean/runs/<run-id>/` with:
 - No concurrent read-only execution scheduler yet (writes are always serialized)
 - No built-in cloud backend, no DB, no broker
 - Resume relies on local state and artifacts; external artifact loss prevents perfect resumption
-- No direct dependency on provider-specific streaming APIs (stdin/prompt + stdout parsing only)
+- No direct dependency on provider-specific streaming APIs (subprocess stdin plus stdout/stderr capture)

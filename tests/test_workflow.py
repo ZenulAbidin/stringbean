@@ -84,6 +84,62 @@ def test_fake_run_plans_and_reviews(tmp_path: Path):
     assert any(p.name.startswith("001-") for p in (run_dir.calls_dir).iterdir())
 
 
+def test_agent_output_streams_stdout_and_stderr_by_default(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    for agent in cfg.agents.values():
+        agent.environment_overrides["EMIT_STDERR_STATUS"] = "1"
+
+    run_dir = create_new_run(tmp_path, "run-stream-default", "Stream output", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    result = asyncio.run(engine.run("Stream output"))
+
+    captured = capsys.readouterr()
+    assert result["status"] == "COMPLETED"
+    assert "[stringbean] starting orchestrator agent: planner" in captured.out
+    assert "stream output start" in captured.out
+    assert "stderr status from planner" in captured.out
+
+
+def test_agent_output_stream_can_be_disabled(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    cfg.output.stream_agent_output = False
+    for agent in cfg.agents.values():
+        agent.environment_overrides["EMIT_STDERR_STATUS"] = "1"
+
+    run_dir = create_new_run(tmp_path, "run-stream-disabled", "Hide output", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    result = asyncio.run(engine.run("Hide output"))
+
+    captured = capsys.readouterr()
+    assert result["status"] == "COMPLETED"
+    assert "stream output start" not in captured.out
+    assert "stderr status from planner" not in captured.out
+
+
+def test_agent_stream_preserves_partial_chunks(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-chunks", "Chunk output", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    engine._stream_agent_chunk("partial")
+    engine._stream_agent_chunk("line\n")
+    engine._log("[stringbean] next")
+
+    captured = capsys.readouterr()
+    assert captured.out == "partialline\n[stringbean] next\n"
+
+
 def test_advisor_revision_leads_to_revised_plan(tmp_path: Path):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")

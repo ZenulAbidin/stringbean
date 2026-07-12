@@ -659,6 +659,11 @@ def _apply_overrides(cfg: Config, orchestrator: Optional[str], advisor: Optional
         cfg.workflow.reviewers = [reviewer]
 
 
+def _apply_output_flags(cfg: Config, quiet: bool, no_agent_stream: bool) -> None:
+    if quiet or no_agent_stream:
+        cfg.output.stream_agent_output = False
+
+
 @app.command()
 def run(
     task: str = typer.Argument(...),
@@ -676,6 +681,12 @@ def run(
     no_advisor: bool = typer.Option(False, "--no-advisor"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     quiet: bool = typer.Option(False, "--quiet"),
+    no_agent_stream: bool = typer.Option(
+        False,
+        "--no-agent-stream",
+        "--no-agent-output",
+        help="Hide live provider agent stdout/stderr. Raw output is still retained in run artifacts.",
+    ),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
 ):
     """
@@ -715,6 +726,7 @@ def run(
         )
 
     _apply_overrides(cfg, orchestrator, advisor, implementer, reviewer)
+    _apply_output_flags(cfg, quiet=quiet, no_agent_stream=no_agent_stream)
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)
     try:
         out = _run_engine(
@@ -741,6 +753,13 @@ def run(
 def resume(
     run_id: str = typer.Argument(...),
     config: Optional[Path] = typer.Option(None, "--config", help="Optional override config snapshot path"),
+    quiet: bool = typer.Option(False, "--quiet"),
+    no_agent_stream: bool = typer.Option(
+        False,
+        "--no-agent-stream",
+        "--no-agent-output",
+        help="Hide live provider agent stdout/stderr. Raw output is still retained in run artifacts.",
+    ),
 ):
     """
     Resume a partial run from the persisted state.
@@ -775,17 +794,22 @@ def resume(
         cfg = load_config(snapshot_path)
     else:
         cfg = load_config(config_path(root))
+    _apply_output_flags(cfg, quiet=quiet, no_agent_stream=no_agent_stream)
 
     run_dir = RunDirectory(root, run_id)
-    engine = WorkflowEngine(cfg, run_dir, state, console=console, quiet=False)
-    result = asyncio.run(
-        engine.run(
-            task=state.state.task,
-            no_advisor=False,
-            max_review_rounds=cfg.workflow.max_review_rounds,
-            dry_run=False,
+    engine = WorkflowEngine(cfg, run_dir, state, console=console, quiet=quiet)
+    try:
+        result = asyncio.run(
+            engine.run(
+                task=state.state.task,
+                no_advisor=False,
+                max_review_rounds=cfg.workflow.max_review_rounds,
+                dry_run=False,
+            )
         )
-    )
+    except RuntimeError as exc:
+        _print_run_failure(run_id, state.state.task, exc)
+        raise typer.Exit(code=1) from exc
     console.print(f"Resumed run complete status: {result}")
 
 
