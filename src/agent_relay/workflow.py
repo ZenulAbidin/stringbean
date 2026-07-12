@@ -8,13 +8,13 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 from rich.console import Console
 from rich.text import Text
 
 from .connectors import Adapter, AdapterCapabilities, ClaudeConnector, CodexConnector, GenericConnector, GrokConnector
-from .config import Config
+from .config import AgentConfig, Config
 from .context import collect_repo_context
 from .models import (
     AdvisorResponse,
@@ -143,12 +143,16 @@ class WorkflowEngine:
         console: Optional[Console] = None,
         quiet: bool = False,
         execution_profile: str = "ro",
+        codex_progress: bool = False,
+        progress_interval_seconds: float = 30.0,
     ) -> None:
         self.config = config
         self.run_dir = run_dir
         self.state = run_state
         self.console = console or Console()
         self.quiet = quiet
+        self.codex_progress = codex_progress
+        self.progress_interval_seconds = progress_interval_seconds
         self.execution_profile = normalize_execution_profile(execution_profile)
         self.adapters = build_adapters(config)
         self.events = RunEventStore(self.run_dir.events_path)
@@ -196,6 +200,8 @@ class WorkflowEngine:
             "Result": "bold white",
             "Review": "bold white",
             "Response": "bold white",
+            "Progress": "bold white",
+            "Agent": "bold white",
             "[stringbean]": "bold white",
         }
         for label, style in label_styles.items():
@@ -222,6 +228,151 @@ class WorkflowEngine:
             return
         self._ensure_agent_stream_formatter().feed(chunk)
 
+    def _progress(self, message: str) -> None:
+        if not self.codex_progress:
+            return
+        self._flush_agent_stream()
+        if self._agent_stream_open_line:
+            print("", flush=True)
+            self._agent_stream_open_line = False
+        print(message, flush=True)
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        minutes, remainder = divmod(seconds, 60)
+        if minutes:
+            return f"{minutes}m {remainder:02d}s"
+        return f"{remainder}s"
+
+    @staticmethod
+    def _shorten_text(value: object, limit: int = 220) -> str:
+        text = str(value).strip()
+        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        if len(text) <= limit:
+            return text
+        return f"{text[: limit - 1]}…"
+
+    @classmethod
+    def _preview_items(cls, values: object, *, key: str | None = None, limit: int = 4) -> str:
+        if not isinstance(values, list) or not values:
+            return ""
+        rendered: list[str] = []
+        for item in values[:limit]:
+            if isinstance(item, dict):
+                raw = item.get(key or "") if key else None
+                raw = raw or item.get("title") or item.get("id") or item.get("summary") or item.get("issue") or item
+            else:
+                raw = item
+            rendered.append(cls._shorten_text(raw, limit=90))
+        if len(values) > limit:
+            rendered.append(f"+{len(values) - limit} more")
+        return "; ".join(rendered)
+
+    def _progress_event(self, status: RunStatus, event: str, payload: Dict[str, object]) -> None:
+        message: str | None = None
+        if event == "dirty-repo":
+            message = "Progress: Repository has uncommitted changes; continuing because clean-start enforcement is off."
+        elif event == "start-planning":
+            message = "Progress: Planning started — the orchestrator is turning the request into concrete tasks."
+        elif event == "plan-complete":
+            tasks = self._preview_items(payload.get("tasks"))
+            suffix = f": {tasks}" if tasks else "."
+            message = f"Progress: Planning complete — selected task IDs{suffix}"
+        elif event == "start-advisor":
+            message = "Progress: Advisor review started — checking the plan before implementation."
+        elif event == "advisor-revision-requested":
+            message = "Progress: Advisor requested a plan revision; orchestrator is revising the plan."
+        elif event == "advisor-blocked":
+            message = "Progress: Advisor blocked the run; finalizing with failure details."
+        elif event == "advisor-complete":
+            message = "Progress: Advisor review complete."
+        elif event == "start-implementation":
+            message = "Progress: Implementation started — running planned task work."
+        elif event == "implementer-incomplete":
+            message = f"Progress: Implementer reported remaining issues on {payload.get('task')}."
+        elif event == "implementing-complete":
+            message = f"Progress: Implementation complete — {payload.get('count', 0)} task(s) marked implemented."
+        elif event == "review-skipped":
+            message = "Progress: Review skipped because max review rounds is 0."
+        elif event == "reviewing":
+            message = f"Progress: Review round {payload.get('round')} started — reviewer is checking the result."
+        elif event == "review-approved":
+            message = f"Progress: Review round {payload.get('round')} approved the result."
+        elif event == "start-fix":
+            message = f"Progress: Fix pass started for review round {payload.get('round')}."
+        elif event == "fixes-complete":
+            message = f"Progress: Fix pass complete for review round {payload.get('round')}; returning to review."
+        elif event == "review-rejected":
+            message = "Progress: Reviewer rejected the result; finalizing with failure details."
+        elif event == "review-round-limit":
+            message = f"Progress: Review round limit reached ({payload.get('max_rounds')}); finalizing with failure details."
+        elif event == "finalized":
+            message = f"Progress: Finalized run with status {status.value}."
+        if message:
+            self._progress(message)
+
+    def _progress_agent_start(self, role: str, agent_name: str, agent: AgentConfig) -> None:
+        mode = self._agent_mode(agent_name) or "default"
+        permission = self._effective_permission(agent)
+        self._progress(
+            f"Agent: {role} {agent_name} started "
+            f"(mode={mode}, profile={self.execution_profile}, permission={permission})."
+        )
+
+    def _progress_agent_wait(self, role: str, agent_name: str, elapsed_seconds: float) -> None:
+        elapsed = self._format_elapsed(elapsed_seconds)
+        targets = {
+            "orchestrator": "plan",
+            "advisor": "advisor verdict",
+            "implementer": "implementation result",
+            "reviewer": "review verdict",
+        }
+        target = targets.get(role, "structured result")
+        self._progress(f"Agent: {role} {agent_name} still running ({elapsed}) — awaiting {target}.")
+
+    def _progress_agent_finish(self, role: str, agent_name: str, exit_code: Optional[int], duration_seconds: float) -> None:
+        elapsed = self._format_elapsed(duration_seconds)
+        self._progress(f"Agent: {role} {agent_name} finished in {elapsed} (exit={exit_code}).")
+
+    def _progress_payload(self, role: str, payload: Dict[str, Any]) -> None:
+        summary = self._shorten_text(payload.get("summary") or "")
+        if "tasks" in payload:
+            task_preview = self._preview_items(payload.get("tasks"), key="title")
+            if summary:
+                self._progress(f"Progress: Plan summary — {summary}")
+            if task_preview:
+                self._progress(f"Progress: Planned tasks — {task_preview}")
+            return
+
+        if "verdict" in payload:
+            verdict = self._shorten_text(payload.get("verdict") or "unknown", limit=60)
+            detail = f" — {summary}" if summary else ""
+            label = "Advisor verdict" if role == "advisor" else "Review verdict"
+            self._progress(f"Progress: {label} — {verdict}{detail}")
+            fixes = self._preview_items(payload.get("required_fixes") or payload.get("blockers") or payload.get("blocking_issues"))
+            if fixes:
+                self._progress(f"Progress: {label} details — {fixes}")
+            return
+
+        if "status" in payload:
+            status = self._shorten_text(payload.get("status") or "unknown", limit=60)
+            detail = f" — {summary}" if summary else ""
+            self._progress(f"Progress: Implementation result — {status}{detail}")
+            files = self._preview_items(payload.get("files_changed"))
+            tests = self._preview_items(payload.get("tests"))
+            remaining = self._preview_items(payload.get("remaining_issues"))
+            if files:
+                self._progress(f"Progress: Files touched — {files}")
+            if tests:
+                self._progress(f"Progress: Tests reported — {tests}")
+            if remaining:
+                self._progress(f"Progress: Remaining issues — {remaining}")
+            return
+
+        if summary:
+            self._progress(f"Progress: {role} summary — {summary}")
+
     def _remember_agent_response(self, role: str, payload: Optional[Dict[str, object]]) -> None:
         if not payload:
             return
@@ -238,6 +389,7 @@ class WorkflowEngine:
         self.state.write()
         payload = payload or {}
         self.events.append(RunEvent(timestamp=_now_iso(), stage=status, event=event, payload=payload))
+        self._progress_event(status, event, payload)
 
     @staticmethod
     def _candidate_mode_from_command(command: Optional[List[str]]) -> Optional[str]:
@@ -451,7 +603,14 @@ class WorkflowEngine:
         if stream_agent_output:
             self._agent_stream_formatter = LiveStreamFormatter(self._write_agent_stream_line)
             self._log(f"[stringbean] starting {role} agent: {agent_name}")
+        if self.codex_progress:
+            self._progress_agent_start(role, agent_name, agent)
         callback = self._stream_agent_chunk if stream_agent_output else None
+        progress_callback = (
+            (lambda elapsed: self._progress_agent_wait(role, agent_name, elapsed))
+            if self.codex_progress
+            else None
+        )
         try:
             result = await run_subprocess(
                 RunnerConfig(
@@ -462,22 +621,30 @@ class WorkflowEngine:
                     prompt=cfg_prompt,
                     on_stdout_line=callback,
                     on_stderr_line=callback,
+                    on_progress=progress_callback,
+                    progress_interval_seconds=self.progress_interval_seconds,
                 )
             )
         except TimeoutError as exc:
             if stream_agent_output:
                 self._flush_agent_stream()
                 self._agent_stream_formatter = None
+            if self.codex_progress:
+                self._progress(f"Agent: {role} {agent_name} timed out.")
             raise RuntimeError(f"agent {agent_name} timed out") from exc
         except Exception as exc:
             if stream_agent_output:
                 self._flush_agent_stream()
                 self._agent_stream_formatter = None
+            if self.codex_progress:
+                self._progress(f"Agent: {role} {agent_name} failed to execute: {self._shorten_text(exc)}")
             raise RuntimeError(f"agent {agent_name} execution failed: {exc}") from exc
         if stream_agent_output:
             self._flush_agent_stream()
             self._log(f"[stringbean] finished {role} agent: {agent_name} (exit {result.exit_code})")
             self._agent_stream_formatter = None
+        if self.codex_progress:
+            self._progress_agent_finish(role, agent_name, result.exit_code, result.duration_seconds)
 
         parse_error: Optional[str] = None
         model_payload = None
@@ -488,6 +655,11 @@ class WorkflowEngine:
         else:
             parsed, raw_payload, parse_error = parse_structured_output(result.raw_stdout, expected)
             model_payload = parsed.model_dump(mode="json") if parsed is not None else None
+        if self.codex_progress:
+            if parse_error:
+                self._progress(f"Progress: {role} result could not be accepted — {self._shorten_text(parse_error)}")
+            elif model_payload:
+                self._progress_payload(role, model_payload)
 
         call_result = AgentCallResult(
             agent_name=agent_name,
@@ -855,6 +1027,18 @@ class WorkflowEngine:
             "implementer": implementer,
             "reviewer": reviewer,
         }
+        selected_preview = ", ".join(
+            f"{role}={agent_name or 'none'}"
+            for role, agent_name in self.state.state.selected_agents.items()
+        )
+        mode_preview = ", ".join(
+            f"{role}={self._agent_mode(agent_name) or resolved_modes[role]}"
+            for role, agent_name in self.state.state.selected_agents.items()
+            if agent_name
+        )
+        self._progress(
+            f"Progress: Selected agents — {selected_preview}; modes: {mode_preview}; profile={self.execution_profile}."
+        )
 
         self.state.state.task = task
         self.state.state.execution_profile = self.execution_profile

@@ -20,6 +20,8 @@ class RunnerConfig:
     prompt: Optional[str] = None
     on_stdout_line: Optional[Callable[[str], None]] = None
     on_stderr_line: Optional[Callable[[str], None]] = None
+    on_progress: Optional[Callable[[float], None]] = None
+    progress_interval_seconds: float = 30.0
 
 
 @dataclass
@@ -38,6 +40,14 @@ def _safe_invoke(callback: Callable[[str], None], line: str) -> None:
         callback(line)
     except Exception:
         # Output callbacks are best-effort telemetry.
+        pass
+
+
+def _safe_invoke_progress(callback: Callable[[float], None], elapsed_seconds: float) -> None:
+    try:
+        callback(elapsed_seconds)
+    except Exception:
+        # Progress callbacks are best-effort telemetry.
         pass
 
 
@@ -95,12 +105,17 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
 
     try:
         end_by = start + timeout_seconds
+        next_progress_at = start + float(cfg.progress_interval_seconds)
         while True:
             code = proc.poll()
             if code is not None:
                 break
-            if time.time() >= end_by:
+            now = time.time()
+            if now >= end_by:
                 raise TimeoutError(f"process timed out after {timeout_seconds} seconds")
+            if cfg.on_progress and cfg.progress_interval_seconds > 0 and now >= next_progress_at:
+                _safe_invoke_progress(cfg.on_progress, now - start)
+                next_progress_at = now + float(cfg.progress_interval_seconds)
             await asyncio.sleep(0.05)
     except TimeoutError:
         _terminate_process_group(proc)

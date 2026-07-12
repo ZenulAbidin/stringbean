@@ -23,6 +23,8 @@ def test_run_help_lists_agent_stream_switch():
     assert result.exit_code == 0
     assert "--no-agent-stream" in result.stdout
     assert "--codex-final" in result.stdout
+    assert "--codex-progress" in result.stdout
+    assert "heartbeat lines" in result.stdout
     assert "--rw" in result.stdout
     assert "--ro" in result.stdout
 

@@ -609,12 +609,23 @@ def _run_engine(
     mode: str,
     role_modes: Optional[dict[str, str]],
     execution_profile: str,
+    codex_progress: bool = False,
+    progress_interval_seconds: float = 30.0,
 ) -> dict:
     root = _project_root()
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)
     run_dir = create_new_run(root, selected_run_id, task, cfg.workflow.max_total_agent_calls, {}, execution_profile=execution_profile)
     run_state = RunState.load(run_dir.state_path)
-    engine = WorkflowEngine(cfg, run_dir, run_state, console=console, quiet=quiet, execution_profile=execution_profile)
+    engine = WorkflowEngine(
+        cfg,
+        run_dir,
+        run_state,
+        console=console,
+        quiet=quiet,
+        execution_profile=execution_profile,
+        codex_progress=codex_progress,
+        progress_interval_seconds=progress_interval_seconds,
+    )
     summary = asyncio.run(
         engine.run(
             task=task,
@@ -777,7 +788,17 @@ def run(
     codex_final: bool = typer.Option(
         False,
         "--codex-final",
-        help="Emit only a compact sentinel-wrapped final block for Codex custom prompts.",
+        help="Emit compact Codex progress plus a sentinel-wrapped final block for Codex prompts/skills.",
+    ),
+    codex_progress: bool = typer.Option(
+        True,
+        "--codex-progress/--no-codex-progress",
+        help="Show compact phase progress while --codex-final runs. Raw provider output remains hidden.",
+    ),
+    codex_progress_interval: float = typer.Option(
+        30.0,
+        "--codex-progress-interval",
+        help="Seconds between still-running heartbeat lines in --codex-final mode.",
     ),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
 ):
@@ -819,9 +840,12 @@ def run(
         )
     if max_review_rounds is not None and max_review_rounds < 0:
         raise typer.BadParameter("max-review-rounds must be 0 or higher.")
+    if codex_progress_interval <= 0:
+        raise typer.BadParameter("codex-progress-interval must be greater than 0.")
 
     _apply_overrides(cfg, orchestrator, advisor, implementer, reviewer)
     _apply_output_flags(cfg, quiet=quiet or codex_final, no_agent_stream=no_agent_stream or codex_final)
+    effective_codex_progress = bool(codex_final and codex_progress)
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)
     try:
         out = _run_engine(
@@ -835,6 +859,8 @@ def run(
             mode=mode,
             role_modes=role_modes or None,
             execution_profile=resolved_execution_profile,
+            codex_progress=effective_codex_progress,
+            progress_interval_seconds=codex_progress_interval,
         )
     except RuntimeError as exc:
         _print_run_failure(selected_run_id, task, exc)

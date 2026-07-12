@@ -37,9 +37,24 @@ STRINGBEAN_RESULT_END
 6. The visible final answer must report the useful fields from that block, especially:
    `Status`, `Result`, `Tasks`, `Review rounds`, and `Artifacts`.
 
+## During the run
+
+Stringbean emits compact progress lines before the final sentinel block:
+
+```text
+Progress: ...
+Agent: ...
+```
+
+Use those lines for brief user-facing updates if the run takes time. These lines are already
+sanitized: they describe phases, selected agents, parsed summaries, verdicts, and bounded
+still-running heartbeats. Do not invent generic progress text when a specific `Progress:` or
+`Agent:` line is available.
+
 ## Output rules
 
 - Do not paste raw provider logs, prompts, JSON, or transcripts.
 - Do not tell the user to press Ctrl+T to see the result.
+- Do not expose hidden chain-of-thought. Progress lines are observable status, not reasoning.
 - Keep the final answer short and focused on Stringbean's final result.
 - If Stringbean fails, report the concise failure reason and any artifact path that was printed.

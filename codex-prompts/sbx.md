@@ -9,6 +9,11 @@ Run Stringbean for this request using:
 sbx $ARGUMENTS --codex-final
 ```
 
+While the command is running, use any `Progress:` or `Agent:` lines from the tool output for
+brief user-facing status updates. Prefer those concrete lines over generic “still working”
+messages. Do not expose hidden chain-of-thought, raw prompts, file dumps, JSON blobs, or full
+provider logs.
+
 After the command completes, find the text between `STRINGBEAN_RESULT_START` and
 `STRINGBEAN_RESULT_END` in the tool output.
 

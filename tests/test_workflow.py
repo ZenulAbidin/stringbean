@@ -125,6 +125,39 @@ def test_agent_output_stream_can_be_disabled(tmp_path: Path, capsys):
     assert "stderr status from planner" not in captured.out
 
 
+def test_codex_progress_prints_sanitized_stage_updates(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    for agent in cfg.agents.values():
+        agent.environment_overrides["EMIT_STDERR_STATUS"] = "1"
+
+    run_dir = create_new_run(tmp_path, "run-codex-progress", "Audit bugs", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(
+        cfg,
+        run_dir,
+        state,
+        quiet=True,
+        codex_progress=True,
+        progress_interval_seconds=999,
+    )
+
+    result = asyncio.run(engine.run("Audit bugs"))
+
+    captured = capsys.readouterr()
+    assert result["status"] == "COMPLETED"
+    assert "Progress: Selected agents" in captured.out
+    assert "Agent: orchestrator planner started" in captured.out
+    assert "Progress: Planning started" in captured.out
+    assert "Progress: Plan summary" in captured.out
+    assert "Progress: Advisor verdict" in captured.out
+    assert "Progress: Implementation result" in captured.out
+    assert "Progress: Review verdict" in captured.out
+    assert "stream output start" not in captured.out
+    assert "stderr status from planner" not in captured.out
+
+
 def test_agent_stream_preserves_partial_chunks(tmp_path: Path, capsys):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")

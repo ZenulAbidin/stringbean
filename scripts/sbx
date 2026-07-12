@@ -6,7 +6,7 @@ usage() {
   cat <<'EOF'
 Usage:
   sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [stringbean run flags]
-  sbx "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [stringbean run flags]
+  sbx "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [--no-codex-progress] [stringbean run flags]
   sbx run TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [more flags]
   stringbean sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [more flags]
   stringbean run "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [more flags]
@@ -17,6 +17,7 @@ Examples:
   sbx run "Build retry logic" --rw --mode high
   sbx "Quietly inspect the repo" --no-agent-stream
   sbx "Inspect through Codex TUI" --codex-final
+  sbx "Inspect through Codex TUI silently" --codex-final --no-codex-progress
   stringbean sbx "Build retry logic" --rw --mode high
 EOF
 }
@@ -305,7 +306,7 @@ fi
 
 option_takes_value() {
   case "$1" in
-    --config|--orchestrator|--advisor|--implementer|--reviewer|--mode|--orchestrator-mode|--advisor-mode|--implementer-mode|--reviewer-mode|--max-review-rounds|--run-id|--profile)
+    --config|--orchestrator|--advisor|--implementer|--reviewer|--mode|--orchestrator-mode|--advisor-mode|--implementer-mode|--reviewer-mode|--max-review-rounds|--run-id|--profile|--codex-progress-interval)
       return 0
       ;;
     *)
@@ -330,7 +331,7 @@ while [[ $# -gt 0 ]]; do
     --*=*)
       RUN_ARGS+=("$arg")
       ;;
-    --no-advisor|--dry-run|--quiet|--no-agent-stream|--no-agent-output|--codex-final|--ro|-ro|--rw|-rw)
+    --no-advisor|--dry-run|--quiet|--no-agent-stream|--no-agent-output|--codex-final|--codex-progress|--no-codex-progress|--ro|-ro|--rw|-rw)
       RUN_ARGS+=("$arg")
       ;;
     -*)
