@@ -38,7 +38,7 @@ from .runner import RunnerConfig, RunnerOutput, run_subprocess
 from .state import CallStore, RunDirectory, RunEventStore, RunState, now_iso
 from .streaming import LiveStreamFormatter
 from .templates import render_template
-from .utils import file_status_set, git_status_short
+from .utils import git_status_short
 from .utils import sanitize_environment
 from pydantic import BaseModel
 
@@ -431,7 +431,52 @@ class WorkflowEngine:
 
     def _policy_violation_message(self, agent_name: str, changed_files: List[str]) -> str:
         prefix = "read-only profile policy violation" if self.execution_profile == "ro" else "read-only role policy violation"
-        return f"{prefix} in {agent_name}: modified files {', '.join(changed_files)}"
+        return f"{prefix} in {agent_name}: forbidden changes {', '.join(changed_files)}"
+
+    @staticmethod
+    def _repo_status_entries(status_text: str) -> Dict[str, str]:
+        entries: Dict[str, str] = {}
+        for line in status_text.splitlines():
+            if len(line) < 4 or not line.strip():
+                continue
+            status = line[:2]
+            path = line[3:]
+            if path:
+                entries[path] = status
+        return entries
+
+    def _repo_status_snapshot(self) -> Dict[str, str]:
+        return self._repo_status_entries(git_status_short(self.repo_root))
+
+    @staticmethod
+    def _is_create_only_status(status: Optional[str]) -> bool:
+        if status is None:
+            return False
+        if status == "??":
+            return True
+        if status.startswith("A") and not any(marker in status for marker in ("D", "R", "C", "T", "U")):
+            return True
+        return False
+
+    def _classify_repo_delta(
+        self,
+        before: Dict[str, str],
+        after: Dict[str, str],
+        *,
+        allow_creates: bool,
+    ) -> Tuple[List[str], List[str], List[str]]:
+        changed = sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+        allowed: List[str] = []
+        denied: List[str] = []
+        for path in changed:
+            before_status = before.get(path)
+            after_status = after.get(path)
+            if allow_creates and self._is_create_only_status(after_status):
+                if before_status is None or self._is_create_only_status(before_status):
+                    allowed.append(path)
+                    continue
+            denied.append(path)
+        return changed, allowed, denied
 
     def _prepare_agent_command(self, agent: AgentConfig, command: List[str]) -> List[str]:
         if agent.adapter.lower() == "codex" or (command and Path(command[0]).name == "codex"):
@@ -547,7 +592,7 @@ class WorkflowEngine:
             track_repo_diff = self._should_track_repo_diff(agent)
         baseline = None
         if track_repo_diff:
-            baseline = file_status_set(git_status_short(self.repo_root))
+            baseline = self._repo_status_snapshot()
 
         command = list(adapter.build_command(prompt, self.repo_root))
         if not command:
@@ -678,14 +723,20 @@ class WorkflowEngine:
             metadata={},
         )
 
-        added: List[str] | None = None
+        changed_paths: List[str] | None = None
         if track_repo_diff and baseline is not None:
-            after = file_status_set(git_status_short(self.repo_root))
-            added = sorted(after - baseline)
-            call_result.diff_delta_files = added
-            if added:
-                self._rollback_read_only_changes(added)
-                parse_error = self._policy_violation_message(agent_name, added)
+            after = self._repo_status_snapshot()
+            changed_paths, allowed_paths, denied_paths = self._classify_repo_delta(
+                baseline,
+                after,
+                allow_creates=self.execution_profile == "ro",
+            )
+            call_result.diff_delta_files = changed_paths
+            call_result.metadata["allowed_create_paths"] = allowed_paths
+            call_result.metadata["denied_change_paths"] = denied_paths
+            if denied_paths:
+                self._rollback_read_only_changes(changed_paths, baseline, after)
+                parse_error = self._policy_violation_message(agent_name, denied_paths)
                 call_result.parse_error = parse_error
         call_result.metadata.update(
             {
@@ -705,13 +756,61 @@ class WorkflowEngine:
 
         return call_result, parse_error
 
-    def _rollback_read_only_changes(self, changed_paths: List[str]) -> None:
+    @staticmethod
+    def _split_status_path(path: str) -> Tuple[str, Optional[str]]:
+        if " -> " not in path:
+            return path, None
+        before, after = path.split(" -> ", 1)
+        return before, after
+
+    def _remove_created_path(self, path: str) -> None:
+        full_path = self.repo_root / path.rstrip("/")
+        if not full_path.exists():
+            return
+        if full_path.is_dir():
+            shutil.rmtree(full_path, ignore_errors=True)
+            return
+        try:
+            full_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _checkout_tracked_path(self, path: str) -> None:
+        subprocess.run(
+            ["git", "checkout", "--", path],
+            cwd=self.repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def _rollback_read_only_changes(
+        self,
+        changed_paths: List[str],
+        before: Optional[Dict[str, str]] = None,
+        after: Optional[Dict[str, str]] = None,
+    ) -> None:
+        before = before or {}
+        after = after or {}
         for path in changed_paths:
-            full_path = self.repo_root / path
+            old_path, new_path = self._split_status_path(path)
+            after_status = after.get(path)
+            before_status = before.get(path)
+
+            if self._is_create_only_status(after_status) and before_status is None:
+                self._remove_created_path(new_path or old_path)
+                continue
+
+            if new_path:
+                self._checkout_tracked_path(old_path)
+                self._remove_created_path(new_path)
+                continue
+
+            full_path = self.repo_root / old_path
             try:
                 tracked = (
                     subprocess.run(
-                        ["git", "ls-files", "--error-unmatch", path],
+                        ["git", "ls-files", "--error-unmatch", old_path],
                         cwd=self.repo_root,
                         check=False,
                         capture_output=True,
@@ -723,21 +822,10 @@ class WorkflowEngine:
                 tracked = False
 
             if tracked:
-                subprocess.run(
-                    ["git", "checkout", "--", path],
-                    cwd=self.repo_root,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
+                self._checkout_tracked_path(old_path)
                 continue
-            if full_path.exists():
-                if full_path.is_dir():
-                    continue
-                try:
-                    full_path.unlink()
-                except FileNotFoundError:
-                    pass
+            if full_path.exists() and self._is_create_only_status(after_status):
+                self._remove_created_path(old_path)
 
     async def _ensure_plan(self, task: str, orchestrator: str) -> OrchestratorPlan:
         if self.run_dir.plan_path.exists():

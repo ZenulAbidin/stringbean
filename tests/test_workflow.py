@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import asyncio
+import subprocess
 
 import pytest
 
@@ -11,6 +12,17 @@ from agent_relay.state import RunState, create_new_run
 from agent_relay.workflow import WorkflowEngine
 from agent_relay.models import ImplementerResponse, RunStatus
 from tests.helpers import write_fake_agent
+
+
+def _init_git_repo(repo: Path) -> None:
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Stringbean Test"], cwd=repo, check=True)
+
+
+def _commit_all(repo: Path, message: str = "baseline") -> None:
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=repo, check=True, capture_output=True)
 
 
 def _build_config(fake_agent: Path, *, reviewer_sequence: str = "approve", reviewer_role="reviewer", planner_role="planner", advisor_role="advisor", implementer_role="implementer", plan_revision: bool = False, require_clean: bool = False) -> Config:
@@ -354,21 +366,20 @@ def test_read_only_agent_cannot_modify(tmp_path: Path):
         asyncio.run(engine.run("Dirty read-only"))
 
 
-def test_ro_profile_blocks_and_rolls_back_write_capable_agent(tmp_path: Path):
-    import subprocess
-
-    subprocess.run(["git", "init"], cwd=tmp_path, check=False, capture_output=True)
+def test_ro_profile_allows_write_capable_agent_to_create_new_files_and_dirs(tmp_path: Path):
+    _init_git_repo(tmp_path)
     script = tmp_path / "writer.py"
     script.write_text(
         """#!/usr/bin/env python3
 import json
 from pathlib import Path
 
-Path("implemented.txt").write_text("changed\\n", encoding="utf-8")
+Path("notes").mkdir()
+Path("notes/implemented.txt").write_text("changed\\n", encoding="utf-8")
 print(json.dumps({
     "status": "completed",
     "summary": "wrote",
-    "files_changed": ["implemented.txt"],
+    "files_changed": ["notes/implemented.txt"],
     "commands_run": [],
     "tests": [],
     "remaining_issues": [],
@@ -399,15 +410,118 @@ print(json.dumps({
         engine._run_agent("writer", "implementer", RunStatus.IMPLEMENTING, "prompt", ImplementerResponse)
     )
 
+    assert parse_error is None
+    assert (tmp_path / "notes" / "implemented.txt").read_text(encoding="utf-8") == "changed\n"
+
+
+def test_ro_profile_blocks_and_rolls_back_existing_file_modification(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    baseline = tmp_path / "tracked.txt"
+    baseline.write_text("baseline\n", encoding="utf-8")
+    _commit_all(tmp_path)
+
+    script = tmp_path / "writer.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+Path("tracked.txt").write_text("modified\\n", encoding="utf-8")
+print(json.dumps({
+    "status": "completed",
+    "summary": "modified",
+    "files_changed": ["tracked.txt"],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [],
+    "handoff_notes": []
+}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    cfg = Config(
+        agents={
+            "writer": AgentConfig(
+                name="writer",
+                adapter="generic",
+                role="implementer",
+                permissions="read_write",
+                command=[str(script)],
+            )
+        },
+        workflow=WorkflowConfig(orchestrator="writer", implementers=["writer"], reviewers=["writer"]),
+        output=OutputConfig(),
+    )
+    run_dir = create_new_run(tmp_path, "run-ro-modify-policy", "RO policy", 10, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, execution_profile="ro")
+
+    _, parse_error = asyncio.run(
+        engine._run_agent("writer", "implementer", RunStatus.IMPLEMENTING, "prompt", ImplementerResponse)
+    )
+
     assert parse_error is not None
     assert "read-only profile policy violation" in parse_error
-    assert not (tmp_path / "implemented.txt").exists()
+    assert "tracked.txt" in parse_error
+    assert baseline.read_text(encoding="utf-8") == "baseline\n"
+
+
+def test_ro_profile_blocks_rename_and_removes_new_target(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    baseline = tmp_path / "tracked.txt"
+    baseline.write_text("baseline\n", encoding="utf-8")
+    _commit_all(tmp_path)
+
+    script = tmp_path / "writer.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+Path("tracked.txt").rename("renamed.txt")
+print(json.dumps({
+    "status": "completed",
+    "summary": "renamed",
+    "files_changed": ["tracked.txt", "renamed.txt"],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [],
+    "handoff_notes": []
+}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    cfg = Config(
+        agents={
+            "writer": AgentConfig(
+                name="writer",
+                adapter="generic",
+                role="implementer",
+                permissions="read_write",
+                command=[str(script)],
+            )
+        },
+        workflow=WorkflowConfig(orchestrator="writer", implementers=["writer"], reviewers=["writer"]),
+        output=OutputConfig(),
+    )
+    run_dir = create_new_run(tmp_path, "run-ro-rename-policy", "RO policy", 10, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, execution_profile="ro")
+
+    _, parse_error = asyncio.run(
+        engine._run_agent("writer", "implementer", RunStatus.IMPLEMENTING, "prompt", ImplementerResponse)
+    )
+
+    assert parse_error is not None
+    assert "tracked.txt" in parse_error
+    assert baseline.read_text(encoding="utf-8") == "baseline\n"
+    assert not (tmp_path / "renamed.txt").exists()
 
 
 def test_rw_profile_allows_write_capable_agent(tmp_path: Path):
-    import subprocess
-
-    subprocess.run(["git", "init"], cwd=tmp_path, check=False, capture_output=True)
+    _init_git_repo(tmp_path)
     script = tmp_path / "writer.py"
     script.write_text(
         """#!/usr/bin/env python3
@@ -543,12 +657,12 @@ def test_prevent_concurrent_write_agents_by_sequential_calls(tmp_path: Path):
 
 def test_read_only_violations_are_rejected_and_rolled_back(tmp_path: Path):
     repo = tmp_path
-    import subprocess
     import asyncio
 
-    subprocess.run(["git", "init"], cwd=repo, check=False, capture_output=True)
+    _init_git_repo(repo)
     baseline = repo / "tracked.txt"
     baseline.write_text("baseline\\n", encoding="utf-8")
+    _commit_all(repo)
 
     script = repo / "agent.sh"
     script.write_text(
@@ -560,7 +674,7 @@ import pathlib
 role = os.environ.get(\"AGENT_ROLE\", \"orchestrator\")
 
 if os.environ.get(\"WRITE_READ_ONLY_VIOLATION\", \"0\") == \"1\" and role == \"advisor\":
-    pathlib.Path(\"read-only-breach.txt\").write_text(\"should be blocked\\n\", encoding=\"utf-8\")
+    pathlib.Path(\"tracked.txt\").write_text(\"should be blocked\\n\", encoding=\"utf-8\")
 
 if role == \"planner\":
     print(\"```json\")
@@ -632,7 +746,7 @@ elif role == \"reviewer\":
     with pytest.raises(RuntimeError):
         asyncio.run(engine.run("Read-only check"))
 
-    assert not (tmp_path / "read-only-breach.txt").exists()
+    assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "baseline\\n"
 
 
 def test_role_mode_override_selects_matching_agent(tmp_path: Path):

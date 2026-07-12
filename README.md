@@ -120,7 +120,7 @@ stringbean run --dry-run "Implement auth checks"
   - `--mode auto|high|medium|low` (default `auto`)
   - `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, `--reviewer-mode`
   - `--profile ro|rw`, `--ro`, `--rw`
-    - `ro` is the default: subagents can inspect and run commands, but repository modifications are treated as policy violations and rolled back where safe.
+    - `ro` is the default create-only profile: subagents can inspect, run commands, and create new files/directories, but modifications, deletes, renames, moves, or type changes to pre-existing repository paths are treated as policy violations and rolled back where safe.
     - `rw` lets write-capable agents modify files. Read-only roles are still diff-checked.
     - Codex agents are launched with explicit approval/sandbox flags instead of inherited defaults: `ro` uses workspace-write with Stringbean diff enforcement; `rw` uses danger-full-access at the provider layer while Stringbean still diff-checks read-only roles.
     - Subagents receive a Stringbean denylist for destructive commands such as `rm`, `sudo`, `dd`, `mkfs`, `shutdown`, and destructive git operations such as `git reset`, `git clean`, and `git push`.
@@ -367,7 +367,8 @@ Each run gets `.stringbean/runs/<run-id>/` with:
 
 - Provider CLIs run as subprocesses with no shell interpolation.
 - Environment values are redacted from subprocess environment when output capture is enabled.
-- Read-only roles can be checked with repository diff snapshots; unauthorized modifications are treated as policy violations.
+- The `ro` profile is create-only: new files/directories are allowed, while modifications, deletes, renames, moves, or type changes to existing paths are treated as policy violations.
+- Read-only roles can be checked with repository diff snapshots; unauthorized writes are treated as policy violations.
 - Dirty repositories are warned on startup and can be blocked with `require_clean_start: true`.
 - No forced git commits/pushes or resets are performed.
 

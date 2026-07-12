@@ -105,9 +105,10 @@ def policy_prompt(profile: str, effective_permission: str) -> str:
         )
     else:
         write_policy = (
-            "Execution profile: ro. Treat this run as read-only. Do not modify files. Stringbean "
-            "will treat any repository modification as a policy violation, even for agents whose "
-            "configured role is read_write."
+            "Execution profile: ro. Treat this run as create-only. You may create new files or "
+            "new directories, but you must not modify, delete, rename, move, or type-change "
+            "pre-existing repository paths. Stringbean will treat forbidden changes as policy "
+            "violations, even for agents whose configured role is read_write."
         )
     return (
         "Stringbean execution policy:\n"
