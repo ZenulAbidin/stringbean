@@ -127,7 +127,7 @@ stringbean run --dry-run "Implement auth checks"
   - `--max-review-rounds N`
   - `--no-advisor`
   - `--dry-run`
-  - `--no-agent-stream` / `--no-agent-output` hides the live provider stdout/stderr stream. By default Stringbean shows visible provider output such as status lines, tool calls, and reasoning summaries emitted by the provider CLI.
+  - `--no-agent-stream` / `--no-agent-output` hides the live provider stdout/stderr stream. By default Stringbean shows formatted provider output such as status lines, tool calls, and reasoning summaries, decoding visible escapes such as `\n` while still retaining raw stdout/stderr in run artifacts.
   - `--quiet`
   - `--run-id`
 - `stringbean resume RUN_ID`

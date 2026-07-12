@@ -140,6 +140,35 @@ def test_agent_stream_preserves_partial_chunks(tmp_path: Path, capsys):
     assert captured.out == "partialline\n[stringbean] next\n"
 
 
+def test_agent_stream_decodes_visible_escapes(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-escapes", "Escaped output", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    engine._stream_agent_chunk("alpha\\nbeta\\t1")
+    engine._log("[stringbean] next")
+
+    captured = capsys.readouterr()
+    assert captured.out == "alpha\nbeta\t1\n[stringbean] next\n"
+
+
+def test_agent_stream_formats_json_events(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-json", "JSON output", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    engine._stream_agent_chunk('{"type":"agent_message","message":"hello\\nworld"}\n')
+
+    captured = capsys.readouterr()
+    assert captured.out == "assistant: hello\nassistant: world\n"
+
+
 def test_advisor_revision_leads_to_revised_plan(tmp_path: Path):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")

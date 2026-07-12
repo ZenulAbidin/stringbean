@@ -35,6 +35,7 @@ from .policy import (
 )
 from .runner import RunnerConfig, RunnerOutput, run_subprocess
 from .state import CallStore, RunDirectory, RunEventStore, RunState, now_iso
+from .streaming import LiveStreamFormatter
 from .templates import render_template
 from .utils import file_status_set, git_status_short
 from .utils import sanitize_environment
@@ -161,6 +162,7 @@ class WorkflowEngine:
             self.call_counter = len(existing)
         self.config_snapshot_written = False
         self._agent_stream_open_line = False
+        self._agent_stream_formatter: Optional[LiveStreamFormatter] = None
         self.policy_bin_dir = install_command_policy_wrappers(self.run_dir.path)
 
         if self.run_dir.task_path.exists():
@@ -169,16 +171,29 @@ class WorkflowEngine:
     def _log(self, message: str) -> None:
         if self.quiet:
             return
+        self._flush_agent_stream()
         if self._agent_stream_open_line:
             print("", flush=True)
             self._agent_stream_open_line = False
         print(message, flush=True)
 
+    def _write_agent_stream_line(self, line: str) -> None:
+        print(line, flush=True)
+        self._agent_stream_open_line = False
+
+    def _ensure_agent_stream_formatter(self) -> LiveStreamFormatter:
+        if self._agent_stream_formatter is None:
+            self._agent_stream_formatter = LiveStreamFormatter(self._write_agent_stream_line)
+        return self._agent_stream_formatter
+
+    def _flush_agent_stream(self) -> None:
+        if self._agent_stream_formatter is not None:
+            self._agent_stream_formatter.flush()
+
     def _stream_agent_chunk(self, chunk: str) -> None:
         if self.quiet or not chunk:
             return
-        print(chunk, end="", flush=True)
-        self._agent_stream_open_line = not chunk.endswith(("\n", "\r"))
+        self._ensure_agent_stream_formatter().feed(chunk)
 
     def _mark(self, status: RunStatus, event: str, payload: Optional[Dict[str, object]] = None) -> None:
         self.state.state.mark(status, datetime.now(timezone.utc))
@@ -396,6 +411,7 @@ class WorkflowEngine:
 
         stream_agent_output = bool(self.config.output.stream_agent_output and not self.quiet)
         if stream_agent_output:
+            self._agent_stream_formatter = LiveStreamFormatter(self._write_agent_stream_line)
             self._log(f"[stringbean] starting {role} agent: {agent_name}")
         callback = self._stream_agent_chunk if stream_agent_output else None
         try:
@@ -411,11 +427,19 @@ class WorkflowEngine:
                 )
             )
         except TimeoutError as exc:
+            if stream_agent_output:
+                self._flush_agent_stream()
+                self._agent_stream_formatter = None
             raise RuntimeError(f"agent {agent_name} timed out") from exc
         except Exception as exc:
+            if stream_agent_output:
+                self._flush_agent_stream()
+                self._agent_stream_formatter = None
             raise RuntimeError(f"agent {agent_name} execution failed: {exc}") from exc
         if stream_agent_output:
+            self._flush_agent_stream()
             self._log(f"[stringbean] finished {role} agent: {agent_name} (exit {result.exit_code})")
+            self._agent_stream_formatter = None
 
         parse_error: Optional[str] = None
         model_payload = None
