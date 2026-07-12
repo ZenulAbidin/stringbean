@@ -9,7 +9,7 @@ import pytest
 from agent_relay.config import AgentConfig, Config, OutputConfig, RepositoryConfig, WorkflowConfig
 from agent_relay.state import RunState, create_new_run
 from agent_relay.workflow import WorkflowEngine
-from agent_relay.models import RunStatus
+from agent_relay.models import ImplementerResponse, RunStatus
 from tests.helpers import write_fake_agent
 
 
@@ -205,6 +205,105 @@ def test_read_only_agent_cannot_modify(tmp_path: Path):
 
     with pytest.raises(RuntimeError):
         asyncio.run(engine.run("Dirty read-only"))
+
+
+def test_ro_profile_blocks_and_rolls_back_write_capable_agent(tmp_path: Path):
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=False, capture_output=True)
+    script = tmp_path / "writer.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+Path("implemented.txt").write_text("changed\\n", encoding="utf-8")
+print(json.dumps({
+    "status": "completed",
+    "summary": "wrote",
+    "files_changed": ["implemented.txt"],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [],
+    "handoff_notes": []
+}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    cfg = Config(
+        agents={
+            "writer": AgentConfig(
+                name="writer",
+                adapter="generic",
+                role="implementer",
+                permissions="read_write",
+                command=[str(script)],
+            )
+        },
+        workflow=WorkflowConfig(orchestrator="writer", implementers=["writer"], reviewers=["writer"]),
+        output=OutputConfig(),
+    )
+    run_dir = create_new_run(tmp_path, "run-ro-policy", "RO policy", 10, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, execution_profile="ro")
+
+    _, parse_error = asyncio.run(
+        engine._run_agent("writer", "implementer", RunStatus.IMPLEMENTING, "prompt", ImplementerResponse)
+    )
+
+    assert parse_error is not None
+    assert "read-only profile policy violation" in parse_error
+    assert not (tmp_path / "implemented.txt").exists()
+
+
+def test_rw_profile_allows_write_capable_agent(tmp_path: Path):
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=False, capture_output=True)
+    script = tmp_path / "writer.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+Path("implemented.txt").write_text("changed\\n", encoding="utf-8")
+print(json.dumps({
+    "status": "completed",
+    "summary": "wrote",
+    "files_changed": ["implemented.txt"],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [],
+    "handoff_notes": []
+}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    cfg = Config(
+        agents={
+            "writer": AgentConfig(
+                name="writer",
+                adapter="generic",
+                role="implementer",
+                permissions="read_write",
+                command=[str(script)],
+            )
+        },
+        workflow=WorkflowConfig(orchestrator="writer", implementers=["writer"], reviewers=["writer"]),
+        output=OutputConfig(),
+    )
+    run_dir = create_new_run(tmp_path, "run-rw-policy", "RW policy", 10, {}, execution_profile="rw")
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, execution_profile="rw")
+
+    _, parse_error = asyncio.run(
+        engine._run_agent("writer", "implementer", RunStatus.IMPLEMENTING, "prompt", ImplementerResponse)
+    )
+
+    assert parse_error is None
+    assert (tmp_path / "implemented.txt").read_text(encoding="utf-8") == "changed\n"
 
 
 def test_resume_after_failed_stage(tmp_path: Path):

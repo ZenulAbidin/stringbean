@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import os
+import subprocess
 
 from agent_relay.config import AgentConfig, Config, RepositoryConfig, WorkflowConfig, OutputConfig, load_config, save_config
+from agent_relay.policy import apply_codex_execution_profile, install_command_policy_wrappers
 from agent_relay.parser import parse_structured_output
 from agent_relay.models import ImplementerResponse, OrchestratorPlan
 def test_config_roundtrip_and_validation(tmp_path: Path):
@@ -102,3 +105,25 @@ def test_invalid_mode_rejected():
         assert "mode must be" in str(exc)
     else:
         raise AssertionError("Invalid mode was accepted")
+
+
+def test_codex_execution_profile_flags_are_forced():
+    base = ["codex", "exec", "--ask-for-approval", "on-request", "--sandbox", "read-only", "-m", "gpt-5.5"]
+
+    ro = apply_codex_execution_profile(base, "ro")
+    assert ro[:6] == ["codex", "exec", "--ask-for-approval", "never", "--sandbox", "workspace-write"]
+    assert "read-only" not in ro
+
+    rw = apply_codex_execution_profile(base, "rw")
+    assert rw[:6] == ["codex", "exec", "--ask-for-approval", "never", "--sandbox", "danger-full-access"]
+
+
+def test_policy_wrapper_blocks_denied_command(tmp_path: Path):
+    policy_bin = install_command_policy_wrappers(tmp_path)
+    env = dict(os.environ)
+    env["PATH"] = f"{policy_bin}{os.pathsep}{env.get('PATH', '')}"
+
+    proc = subprocess.run(["rm", "--version"], env=env, capture_output=True, text=True, check=False)
+
+    assert proc.returncode == 126
+    assert "stringbean policy" in proc.stderr

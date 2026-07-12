@@ -31,6 +31,7 @@ from .state import RunDirectory, RunState, create_new_run, list_runs
 from .templates import available_template_names
 from .utils import git_status_short, stable_id
 from .workflow import WorkflowEngine
+from .policy import normalize_execution_profile
 
 app = typer.Typer(help=f"{PROJECT_NAME} local orchestrator CLI.")
 console = Console()
@@ -43,6 +44,10 @@ def _codex_command(model: str, reasoning_effort: str) -> list[str]:
     return [
         "codex",
         "exec",
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        "workspace-write",
         "-m",
         model,
         "-c",
@@ -602,12 +607,13 @@ def _run_engine(
     max_review_rounds: Optional[int],
     mode: str,
     role_modes: Optional[dict[str, str]],
+    execution_profile: str,
 ) -> dict:
     root = _project_root()
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)
-    run_dir = create_new_run(root, selected_run_id, task, cfg.workflow.max_total_agent_calls, {})
+    run_dir = create_new_run(root, selected_run_id, task, cfg.workflow.max_total_agent_calls, {}, execution_profile=execution_profile)
     run_state = RunState.load(run_dir.state_path)
-    engine = WorkflowEngine(cfg, run_dir, run_state, console=console, quiet=quiet)
+    engine = WorkflowEngine(cfg, run_dir, run_state, console=console, quiet=quiet, execution_profile=execution_profile)
     summary = asyncio.run(
         engine.run(
             task=task,
@@ -664,6 +670,19 @@ def _apply_output_flags(cfg: Config, quiet: bool, no_agent_stream: bool) -> None
         cfg.output.stream_agent_output = False
 
 
+def _resolve_execution_profile(profile: str, ro: bool, rw: bool) -> str:
+    if ro and rw:
+        raise typer.BadParameter("Use only one of --ro or --rw")
+    if rw:
+        return "rw"
+    if ro:
+        return "ro"
+    try:
+        return normalize_execution_profile(profile)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 @app.command()
 def run(
     task: str = typer.Argument(...),
@@ -677,6 +696,9 @@ def run(
     advisor_mode: Optional[str] = typer.Option(None, "--advisor-mode"),
     implementer_mode: Optional[str] = typer.Option(None, "--implementer-mode"),
     reviewer_mode: Optional[str] = typer.Option(None, "--reviewer-mode"),
+    execution_profile: str = typer.Option("ro", "--profile", help="Execution profile: ro or rw. Default ro blocks repository writes."),
+    ro: bool = typer.Option(False, "--ro", "-ro", help="Read-only execution profile. This is the default."),
+    rw: bool = typer.Option(False, "--rw", "-rw", help="Read-write execution profile. Allows write-capable agents to modify files."),
     max_review_rounds: Optional[int] = typer.Option(None, "--max-review-rounds"),
     no_advisor: bool = typer.Option(False, "--no-advisor"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -709,6 +731,7 @@ def run(
     advisor_mode = _coerce_mode(advisor_mode, "--advisor-mode")
     implementer_mode = _coerce_mode(implementer_mode, "--implementer-mode")
     reviewer_mode = _coerce_mode(reviewer_mode, "--reviewer-mode")
+    resolved_execution_profile = _resolve_execution_profile(execution_profile, ro, rw)
 
     role_modes: dict[str, str] = {}
     if orchestrator_mode:
@@ -739,6 +762,7 @@ def run(
             max_review_rounds=max_review_rounds,
             mode=mode,
             role_modes=role_modes or None,
+            execution_profile=resolved_execution_profile,
         )
     except RuntimeError as exc:
         _print_run_failure(selected_run_id, task, exc)
@@ -753,6 +777,9 @@ def run(
 def resume(
     run_id: str = typer.Argument(...),
     config: Optional[Path] = typer.Option(None, "--config", help="Optional override config snapshot path"),
+    execution_profile: Optional[str] = typer.Option(None, "--profile", help="Override execution profile for resume: ro or rw"),
+    ro: bool = typer.Option(False, "--ro", "-ro", help="Resume with read-only execution profile."),
+    rw: bool = typer.Option(False, "--rw", "-rw", help="Resume with read-write execution profile."),
     quiet: bool = typer.Option(False, "--quiet"),
     no_agent_stream: bool = typer.Option(
         False,
@@ -780,7 +807,11 @@ def resume(
     if state.state.completed:
         console.print("Run already completed.")
         return
+    if execution_profile is None:
+        execution_profile = state.state.execution_profile or "ro"
+    resolved_execution_profile = _resolve_execution_profile(execution_profile, ro, rw)
     console.print(f"Resuming run {run_id} at stage {state.state.stage.value}")
+    console.print(f"Execution profile: {resolved_execution_profile}")
     if state.state.last_error:
         console.print(f"Previous error: {state.state.last_error}")
     completed = sorted([s.value for s in state.state.completed_stages])
@@ -797,7 +828,7 @@ def resume(
     _apply_output_flags(cfg, quiet=quiet, no_agent_stream=no_agent_stream)
 
     run_dir = RunDirectory(root, run_id)
-    engine = WorkflowEngine(cfg, run_dir, state, console=console, quiet=quiet)
+    engine = WorkflowEngine(cfg, run_dir, state, console=console, quiet=quiet, execution_profile=resolved_execution_profile)
     try:
         result = asyncio.run(
             engine.run(
@@ -841,6 +872,7 @@ def status(run_id: Optional[str] = typer.Argument(None)):
     console.print(f"Stage: {state.stage.value}")
     console.print(f"Status: {state.status.value}")
     console.print(f"Task: {state.task}")
+    console.print(f"Execution profile: {state.execution_profile}")
     console.print(f"Selected agents: {state.selected_agents}")
     console.print(f"Implemented tasks: {state.implemented_task_ids}")
     console.print(f"Review rounds: {state.review_round}")

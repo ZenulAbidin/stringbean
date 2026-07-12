@@ -62,7 +62,8 @@ pip install -e .
 ```bash
 stringbean init
 stringbean doctor
-stringbean run "Implement lightweight input validation in API endpoint"
+stringbean run "Inspect lightweight input validation in API endpoint"
+stringbean run "Implement lightweight input validation in API endpoint" --rw
 stringbean status
 stringbean logs <run-id>
 ```
@@ -71,12 +72,13 @@ For the lightweight slash-style flow from any directory, use the repo wrapper:
 
 ```bash
 # from any directory
-~/Documents/stringbean/scripts/sbx "Implement feature X"
+~/Documents/stringbean/scripts/sbx "Inspect feature X"
+~/Documents/stringbean/scripts/sbx "Implement feature X" --rw
 # or explicitly:
-~/Documents/stringbean/scripts/stringbean sbx "Implement feature X"
+~/Documents/stringbean/scripts/stringbean sbx "Implement feature X" --rw
 # or, after sourcing the hook below:
 # source ~/Documents/stringbean/scripts/sbx-zsh-hook.zsh
-stringbean sbx "Implement feature X"
+stringbean sbx "Implement feature X" --rw
 ```
 
 If `stringbean` points to `~/.local/bin/stringbean`, it may be an old shim and can pick the wrong Python.
@@ -117,6 +119,11 @@ stringbean run --dry-run "Implement auth checks"
   - `--orchestrator`, `--advisor`, `--implementer`, `--reviewer`
   - `--mode auto|high|medium|low` (default `auto`)
   - `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, `--reviewer-mode`
+  - `--profile ro|rw`, `--ro`, `--rw`
+    - `ro` is the default: subagents can inspect and run commands, but repository modifications are treated as policy violations and rolled back where safe.
+    - `rw` lets write-capable agents modify files. Read-only roles are still diff-checked.
+    - Codex agents are launched with explicit approval/sandbox flags instead of inherited defaults: `ro` uses workspace-write with Stringbean diff enforcement; `rw` uses danger-full-access at the provider layer while Stringbean still diff-checks read-only roles.
+    - Subagents receive a Stringbean denylist for destructive commands such as `rm`, `sudo`, `dd`, `mkfs`, `shutdown`, and destructive git operations such as `git reset`, `git clean`, and `git push`.
   - `--max-review-rounds N`
   - `--no-advisor`
   - `--dry-run`
@@ -135,7 +142,7 @@ stringbean run --dry-run "Implement auth checks"
 - `scripts/stringbean` is a local shim that always routes into repo code.
 
 ```bash
-~/Documents/stringbean/scripts/stringbean run "Quick task"
+~/Documents/stringbean/scripts/stringbean run "Quick task" --rw
 ```
 
 ### Codex quick command (slash-style)
@@ -143,14 +150,15 @@ stringbean run --dry-run "Implement auth checks"
 You can run the local wrapper as a one-off command from the repo:
 
 ```bash
-./scripts/sbx "Fix validation in signup endpoint" --mode auto
-./scripts/sbx "Refactor auth flow" --mode high
+./scripts/sbx "Inspect validation in signup endpoint" --mode auto
+./scripts/sbx "Fix validation in signup endpoint" --rw --mode auto
+./scripts/sbx "Refactor auth flow" --rw --mode high
 ```
 
 If you want it as a slash command in your UI, map `/sbx` to run:
 
 ```text
-./scripts/sbx "<TASK>" [--mode auto|low|medium|high]
+./scripts/sbx "<TASK>" [--ro|--rw] [--mode auto|low|medium|high]
 ```
 
 If you want `/sbx` usable directly from zsh terminal:
@@ -162,7 +170,7 @@ source ~/Documents/stringbean/scripts/sbx-zsh-hook.zsh
 Then type:
 
 ```bash
-/sbx "Fix login validation bug" --mode high
+/sbx "Fix login validation bug" --rw --mode high
 ```
 
 If `sbx` is still being resolved to an old global script, this hook also defines a `sbx` shell function so `sbx ...` always uses the repo-local wrapper.

@@ -28,6 +28,7 @@ This project uses a lightweight release flow you can run from a clean local chec
 
   ```bash
   ~/Documents/stringbean/scripts/sbx "Quick smoke test" --mode low
+  ~/Documents/stringbean/scripts/sbx "Quick write smoke test" --rw --mode low
   ```
 
 ## 2) Build & package

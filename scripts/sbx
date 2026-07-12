@@ -5,16 +5,18 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  sbx "TASK" [--mode auto|low|medium|high] [--no-agent-stream] [stringbean run flags]
-  sbx run "TASK" [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
-  stringbean sbx "TASK" [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
-  stringbean run "TASK" [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
+  sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [stringbean run flags]
+  sbx "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [stringbean run flags]
+  sbx run TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
+  stringbean sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
+  stringbean run "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [more flags]
 
 Examples:
-  sbx "Add a typo fix in docs"
-  sbx run "Build retry logic" --mode high
+  sbx inspect the docs
+  sbx "Add a typo fix in docs" --rw
+  sbx run "Build retry logic" --rw --mode high
   sbx "Quietly inspect the repo" --no-agent-stream
-  stringbean sbx "Build retry logic" --mode high
+  stringbean sbx "Build retry logic" --rw --mode high
 EOF
 }
 
@@ -181,7 +183,7 @@ resolve_python() {
     local runtime_py
     runtime_py="$(bootstrap_runtime_python "$fallback_path" || true)"
     if [[ -n "${runtime_py-}" && -x "$runtime_py" && "$runtime_py" == *".stringbean-runtime"* ]]; then
-      echo "Using bundled local runtime: $runtime_py"
+      echo "Using bundled local runtime: $runtime_py" >&2
       printf '%s\n' "$runtime_py"
       return 0
     fi
@@ -273,49 +275,79 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
-FIRST_ARG="${1-}"
-TASK=""
-
-case "$FIRST_ARG" in
+case "${1-}" in
   -h|--help|help)
     usage
     exit 0
     ;;
   sbx|run)
-    if [[ $# -lt 2 ]]; then
-      echo "Usage: $FIRST_ARG requires a task argument."
-      usage
-      exit 1
-    fi
-    shift
-    TASK="$1"
     shift
     ;;
   /sbx)
-    if [[ $# -lt 2 ]]; then
-      echo 'Usage: /sbx "TASK" [flags]'
-      usage
-      exit 1
-    fi
-    shift
-    TASK="$1"
-    shift
-    ;;
-  *)
-    TASK="$1"
-    if [[ -z "${TASK// }" ]]; then
-      echo "Task cannot be empty."
-      usage
-      exit 1
-    fi
     shift
     ;;
 esac
 
+if [[ $# -lt 1 ]]; then
+  echo "Task cannot be empty."
+  usage
+  exit 1
+fi
+
+option_takes_value() {
+  case "$1" in
+    --config|--orchestrator|--advisor|--implementer|--reviewer|--mode|--orchestrator-mode|--advisor-mode|--implementer-mode|--reviewer-mode|--max-review-rounds|--run-id|--profile)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+TASK_PARTS=()
+RUN_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  arg="$1"
+  shift
+  case "$arg" in
+    --)
+      while [[ $# -gt 0 ]]; do
+        TASK_PARTS+=("$1")
+        shift
+      done
+      ;;
+    --*=*)
+      RUN_ARGS+=("$arg")
+      ;;
+    --no-advisor|--dry-run|--quiet|--no-agent-stream|--no-agent-output|--ro|-ro|--rw|-rw)
+      RUN_ARGS+=("$arg")
+      ;;
+    -*)
+      if option_takes_value "$arg"; then
+        if [[ $# -lt 1 ]]; then
+          echo "Option requires a value: $arg"
+          usage
+          exit 1
+        fi
+        RUN_ARGS+=("$arg" "$1")
+        shift
+      else
+        RUN_ARGS+=("$arg")
+      fi
+      ;;
+    *)
+      TASK_PARTS+=("$arg")
+      ;;
+  esac
+done
+
+TASK="${TASK_PARTS[*]}"
 if [[ -z "${TASK// }" ]]; then
   echo "Task cannot be empty."
   usage
   exit 1
 fi
 
-run_cli run "$TASK" "$@"
+run_cli run "$TASK" "${RUN_ARGS[@]}"

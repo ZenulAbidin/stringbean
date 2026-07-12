@@ -67,7 +67,7 @@ A typical workflow should look like:
 
 stringbean init
 stringbean doctor
-stringbean run "Add rate limiting to the public API"
+stringbean run "Add rate limiting to the public API" --rw
 
 The terminal should display a concise stream such as:
 

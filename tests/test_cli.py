@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 from typer.testing import CliRunner
 
@@ -21,6 +22,22 @@ def test_run_help_lists_agent_stream_switch():
     result = runner.invoke(cli.app, ["run", "--help"])
     assert result.exit_code == 0
     assert "--no-agent-stream" in result.stdout
+    assert "--rw" in result.stdout
+    assert "--ro" in result.stdout
+
+
+def test_sbx_accepts_unquoted_prompt_words():
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [str(repo / "scripts" / "sbx"), "enumerate", "bugs", "--dry-run", "--quiet"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "enumerate-bugs" in result.stdout
+    assert "'dry_run': True" in result.stdout
 
 
 def test_init_and_status_cycle(tmp_path: Path, monkeypatch):

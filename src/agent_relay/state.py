@@ -103,7 +103,14 @@ class RunEventStore:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def create_new_run(root: Path, run_id: str, task: str, run_limit: int, selected_agents: Dict[str, str]) -> RunDirectory:
+def create_new_run(
+    root: Path,
+    run_id: str,
+    task: str,
+    run_limit: int,
+    selected_agents: Dict[str, str],
+    execution_profile: str = "ro",
+) -> RunDirectory:
     rd = RunDirectory(root, run_id)
     if rd.path.exists():
         from shutil import rmtree
@@ -120,6 +127,7 @@ def create_new_run(root: Path, run_id: str, task: str, run_limit: int, selected_
             status=RunStatus.RECEIVED,
             stage=RunStatus.RECEIVED,
             selected_agents=selected_agents,
+            execution_profile=execution_profile,
             run_dir=str(rd.path),
             total_calls_limit=run_limit,
         ),
@@ -131,6 +139,7 @@ def create_new_run(root: Path, run_id: str, task: str, run_limit: int, selected_
                 "run_id": run_id,
                 "task": task,
                 "status": RunStatus.RECEIVED.value,
+                "execution_profile": execution_profile,
             },
             indent=2,
         ),

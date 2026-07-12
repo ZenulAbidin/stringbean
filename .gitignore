@@ -1,4 +1,5 @@
 .stringbean-fake-state.json
+.stringbean-runtime/
 .pytest_cache/
 .stringbean/runs/
 __pycache__/

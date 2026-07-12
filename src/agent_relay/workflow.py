@@ -25,6 +25,14 @@ from .models import (
     RunStatus,
 )
 from .parser import parse_structured_output
+from .policy import (
+    DENIED_COMMANDS,
+    DENIED_GIT_SUBCOMMANDS,
+    apply_codex_execution_profile,
+    install_command_policy_wrappers,
+    normalize_execution_profile,
+    policy_prompt,
+)
 from .runner import RunnerConfig, RunnerOutput, run_subprocess
 from .state import CallStore, RunDirectory, RunEventStore, RunState, now_iso
 from .templates import render_template
@@ -132,12 +140,14 @@ class WorkflowEngine:
         run_state: RunState,
         console: Optional[Console] = None,
         quiet: bool = False,
+        execution_profile: str = "ro",
     ) -> None:
         self.config = config
         self.run_dir = run_dir
         self.state = run_state
         self.console = console or Console()
         self.quiet = quiet
+        self.execution_profile = normalize_execution_profile(execution_profile)
         self.adapters = build_adapters(config)
         self.events = RunEventStore(self.run_dir.events_path)
         self.call_store = CallStore(self.run_dir.calls_dir)
@@ -151,6 +161,7 @@ class WorkflowEngine:
             self.call_counter = len(existing)
         self.config_snapshot_written = False
         self._agent_stream_open_line = False
+        self.policy_bin_dir = install_command_policy_wrappers(self.run_dir.path)
 
         if self.run_dir.task_path.exists():
             self.state.state.task = self.run_dir.task_path.read_text(encoding="utf-8").strip()
@@ -204,6 +215,32 @@ class WorkflowEngine:
         if cfg.mode:
             return cfg.mode
         return self._candidate_mode_from_command(cfg.command)
+
+    def _effective_permission(self, agent: AgentConfig) -> str:
+        if self.execution_profile == "ro":
+            return "read_only"
+        return agent.permissions
+
+    def _should_track_repo_diff(self, agent: AgentConfig) -> bool:
+        return self.execution_profile == "ro" or agent.permissions == "read_only"
+
+    def _policy_violation_message(self, agent_name: str, changed_files: List[str]) -> str:
+        prefix = "read-only profile policy violation" if self.execution_profile == "ro" else "read-only role policy violation"
+        return f"{prefix} in {agent_name}: modified files {', '.join(changed_files)}"
+
+    def _prepare_agent_command(self, agent: AgentConfig, command: List[str]) -> List[str]:
+        if agent.adapter.lower() == "codex" or (command and Path(command[0]).name == "codex"):
+            return apply_codex_execution_profile(command, self.execution_profile)
+        return command
+
+    def _apply_subagent_policy_env(self, env_overrides: Dict[str, str]) -> Dict[str, str]:
+        out = dict(env_overrides)
+        existing_path = out.get("PATH") or os.environ.get("PATH", "")
+        out["PATH"] = f"{self.policy_bin_dir}{os.pathsep}{existing_path}" if existing_path else str(self.policy_bin_dir)
+        out["STRINGBEAN_EXECUTION_PROFILE"] = self.execution_profile
+        out["STRINGBEAN_DENIED_COMMANDS"] = ",".join(DENIED_COMMANDS)
+        out["STRINGBEAN_DENIED_GIT_SUBCOMMANDS"] = ",".join(DENIED_GIT_SUBCOMMANDS)
+        return out
 
     def _resolve_modes(self, task: str, global_mode: str, role_modes: Optional[Dict[str, str]]) -> Dict[str, str]:
         if not task:
@@ -302,14 +339,15 @@ class WorkflowEngine:
             raise RuntimeError(f"agent {agent_name} does not support prompt transport {agent.prompt_transport}")
 
         if track_repo_diff is None:
-            track_repo_diff = agent.permissions == "read_only"
+            track_repo_diff = self._should_track_repo_diff(agent)
         baseline = None
-        if agent.permissions == "read_only" and track_repo_diff:
+        if track_repo_diff:
             baseline = file_status_set(git_status_short(self.repo_root))
 
         command = list(adapter.build_command(prompt, self.repo_root))
         if not command:
             raise RuntimeError(f"agent {agent_name} missing command")
+        command = self._prepare_agent_command(agent, command)
 
         attempted = {original_agent_name}
         while not shutil.which(command[0]):
@@ -328,8 +366,11 @@ class WorkflowEngine:
             command = list(adapter.build_command(prompt, self.repo_root))
             if not command:
                 raise RuntimeError(f"agent {agent_name} missing command")
+            command = self._prepare_agent_command(agent, command)
             if not adapter.supports_prompt_transport(agent.prompt_transport):
                 raise RuntimeError(f"agent {agent_name} does not support prompt transport {agent.prompt_transport}")
+
+        prompt = policy_prompt(self.execution_profile, self._effective_permission(agent)) + "\n\n" + prompt
 
         cfg_prompt = None
         if agent.prompt_transport == "argv":
@@ -346,6 +387,7 @@ class WorkflowEngine:
         env_overrides = dict(agent.environment_overrides)
         if extra_env:
             env_overrides.update(extra_env)
+        env_overrides = self._apply_subagent_policy_env(env_overrides)
         if self.config.output.redact_environment_values:
             env = sanitize_environment(env_overrides)
         else:
@@ -403,14 +445,22 @@ class WorkflowEngine:
         )
 
         added: List[str] | None = None
-        if agent.permissions == "read_only" and track_repo_diff and baseline is not None:
+        if track_repo_diff and baseline is not None:
             after = file_status_set(git_status_short(self.repo_root))
             added = sorted(after - baseline)
             call_result.diff_delta_files = added
             if added:
                 self._rollback_read_only_changes(added)
-                parse_error = f"read-only policy violation in {agent_name}: modified files {', '.join(added)}"
+                parse_error = self._policy_violation_message(agent_name, added)
                 call_result.parse_error = parse_error
+        call_result.metadata.update(
+            {
+                "execution_profile": self.execution_profile,
+                "effective_permission": self._effective_permission(agent),
+                "denied_commands": list(DENIED_COMMANDS),
+                "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
+            }
+        )
 
         self.state.state.call_count += 1
         idx = self._run_dir_index()
@@ -736,6 +786,7 @@ class WorkflowEngine:
         }
 
         self.state.state.task = task
+        self.state.state.execution_profile = self.execution_profile
         self.run_dir.task_path.write_text(task, encoding="utf-8")
         self.state.write()
 
@@ -752,13 +803,15 @@ class WorkflowEngine:
                     cmd = adapter.build_command("<prompt omitted>", self.repo_root)
                 except Exception:
                     cmd = agent.command or []
+                cmd = self._prepare_agent_command(agent, list(cmd))
                 dry_run_commands[role_name] = cmd
-                dry_run_permissions[role_name] = agent.permissions
+                dry_run_permissions[role_name] = self._effective_permission(agent)
 
             return {
                 "dry_run": True,
                 "selected_agents": self.state.state.selected_agents,
                 "selected_modes": resolved_modes,
+                "execution_profile": self.execution_profile,
                 "stages": [
                     RunStatus.PLANNING.value,
                     RunStatus.ADVISOR_REVIEW.value if advisor else None,
@@ -768,6 +821,8 @@ class WorkflowEngine:
                 ],
                 "commands": dry_run_commands,
                 "permissions": dry_run_permissions,
+                "denied_commands": list(DENIED_COMMANDS),
+                "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
                 "state_dir": str(self.run_dir.path),
                 "plan_exists": plan_exists,
             }
