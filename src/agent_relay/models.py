@@ -9,6 +9,29 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+def _coerce_string_list(value: Any) -> Any:
+    if value is None or not isinstance(value, list):
+        return value
+    out: List[str] = []
+    for item in value:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            command = item.get("command") or item.get("cmd") or item.get("path") or item.get("file")
+            issue = item.get("issue") or item.get("title") or item.get("summary") or item.get("message")
+            if command is not None and "exit_code" in item:
+                out.append(f"{command} (exit_code={item['exit_code']})")
+            elif command is not None:
+                out.append(str(command))
+            elif issue is not None:
+                out.append(str(issue))
+            else:
+                out.append(json.dumps(item, sort_keys=True))
+        else:
+            out.append(str(item))
+    return out
+
+
 class RunStatus(str, Enum):
     RECEIVED = "RECEIVED"
     PLANNING = "PLANNING"
@@ -77,6 +100,11 @@ class AdvisorResponse(BaseModel):
     concerns: List[str] = Field(default_factory=list)
     recommendations: List[str] = Field(default_factory=list)
 
+    @field_validator("blockers", "concerns", "recommendations", mode="before")
+    @classmethod
+    def _coerce_string_list(cls, value: Any) -> Any:
+        return _coerce_string_list(value)
+
 
 class ImplementerResponse(BaseModel):
     status: str
@@ -90,23 +118,7 @@ class ImplementerResponse(BaseModel):
     @field_validator("files_changed", "commands_run", "tests", "remaining_issues", "handoff_notes", mode="before")
     @classmethod
     def _coerce_string_list(cls, value: Any) -> Any:
-        if value is None or not isinstance(value, list):
-            return value
-        out: List[str] = []
-        for item in value:
-            if isinstance(item, str):
-                out.append(item)
-            elif isinstance(item, dict):
-                command = item.get("command") or item.get("cmd") or item.get("path") or item.get("file")
-                if command is not None and "exit_code" in item:
-                    out.append(f"{command} (exit_code={item['exit_code']})")
-                elif command is not None:
-                    out.append(str(command))
-                else:
-                    out.append(json.dumps(item, sort_keys=True))
-            else:
-                out.append(str(item))
-        return out
+        return _coerce_string_list(value)
 
 
 class ReviewerResponse(BaseModel):
@@ -116,6 +128,11 @@ class ReviewerResponse(BaseModel):
     non_blocking_issues: List[str] = Field(default_factory=list)
     required_fixes: List[str] = Field(default_factory=list)
     tests_recommended: List[str] = Field(default_factory=list)
+
+    @field_validator("blocking_issues", "non_blocking_issues", "required_fixes", "tests_recommended", mode="before")
+    @classmethod
+    def _coerce_string_list(cls, value: Any) -> Any:
+        return _coerce_string_list(value)
 
 
 class RunStateModel(BaseModel):

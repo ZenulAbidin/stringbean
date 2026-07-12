@@ -8,7 +8,7 @@ import subprocess
 from agent_relay.config import AgentConfig, Config, RepositoryConfig, WorkflowConfig, OutputConfig, load_config, save_config
 from agent_relay.policy import apply_codex_execution_profile, install_command_policy_wrappers
 from agent_relay.parser import parse_structured_output
-from agent_relay.models import ImplementerResponse, OrchestratorPlan
+from agent_relay.models import ImplementerResponse, OrchestratorPlan, ReviewerResponse
 def test_config_roundtrip_and_validation(tmp_path: Path):
     cfg = Config(
         agents={
@@ -91,6 +91,22 @@ def test_implementer_response_coerces_structured_command_results():
     assert parsed.commands_run == ["python3 -m pytest -q (exit_code=0)"]
 
 
+def test_reviewer_response_coerces_structured_issues():
+    payload = {
+        "verdict": "reject",
+        "summary": "needs work",
+        "blocking_issues": [
+            {"issue": "Repository was modified during a read-only task", "files": ["README.md"]},
+        ],
+        "non_blocking_issues": [],
+        "required_fixes": [{"summary": "Remove unrelated edits"}],
+        "tests_recommended": [],
+    }
+    parsed = ReviewerResponse.model_validate(payload)
+    assert parsed.blocking_issues == ["Repository was modified during a read-only task"]
+    assert parsed.required_fixes == ["Remove unrelated edits"]
+
+
 def test_invalid_mode_rejected():
     try:
         AgentConfig(
@@ -111,11 +127,11 @@ def test_codex_execution_profile_flags_are_forced():
     base = ["codex", "exec", "--ask-for-approval", "on-request", "--sandbox", "read-only", "-m", "gpt-5.5"]
 
     ro = apply_codex_execution_profile(base, "ro")
-    assert ro[:6] == ["codex", "exec", "--ask-for-approval", "never", "--sandbox", "workspace-write"]
+    assert ro[:6] == ["codex", "--ask-for-approval", "never", "--sandbox", "workspace-write", "exec"]
     assert "read-only" not in ro
 
     rw = apply_codex_execution_profile(base, "rw")
-    assert rw[:6] == ["codex", "exec", "--ask-for-approval", "never", "--sandbox", "danger-full-access"]
+    assert rw[:6] == ["codex", "--ask-for-approval", "never", "--sandbox", "danger-full-access", "exec"]
 
 
 def test_policy_wrapper_blocks_denied_command(tmp_path: Path):

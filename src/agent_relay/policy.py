@@ -78,15 +78,17 @@ def apply_codex_execution_profile(command: Sequence[str], profile: str) -> list[
             continue
         out.append(str(part))
 
-    if len(out) >= 2 and Path(out[0]).name == "codex" and out[1] == "exec":
+    if len(out) >= 2 and Path(out[0]).name == "codex" and "exec" in out[1:]:
+        exec_index = out.index("exec", 1)
         return [
             out[0],
-            out[1],
             "--ask-for-approval",
             "never",
             "--sandbox",
             codex_sandbox_for_profile(profile),
-            *out[2:],
+            *out[1:exec_index],
+            out[exec_index],
+            *out[exec_index + 1 :],
         ]
     return out
 

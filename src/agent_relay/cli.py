@@ -43,11 +43,11 @@ MODE_CHOICES = {"auto", "high", "medium", "low"}
 def _codex_command(model: str, reasoning_effort: str) -> list[str]:
     return [
         "codex",
-        "exec",
         "--ask-for-approval",
         "never",
         "--sandbox",
         "workspace-write",
+        "exec",
         "-m",
         model,
         "-c",
@@ -747,6 +747,8 @@ def run(
             f"Invalid workflow.max_total_agent_calls={cfg.workflow.max_total_agent_calls} in {cfg_path}. "
             "Set it to 1 or higher."
         )
+    if max_review_rounds is not None and max_review_rounds < 0:
+        raise typer.BadParameter("max-review-rounds must be 0 or higher.")
 
     _apply_overrides(cfg, orchestrator, advisor, implementer, reviewer)
     _apply_output_flags(cfg, quiet=quiet, no_agent_stream=no_agent_stream)

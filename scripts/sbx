@@ -282,9 +282,17 @@ case "${1-}" in
     ;;
   sbx|run)
     shift
+    if [[ "${1-}" == "-h" || "${1-}" == "--help" || "${1-}" == "help" ]]; then
+      run_cli run --help
+      exit $?
+    fi
     ;;
   /sbx)
     shift
+    if [[ "${1-}" == "-h" || "${1-}" == "--help" || "${1-}" == "help" ]]; then
+      run_cli run --help
+      exit $?
+    fi
     ;;
 esac
 

@@ -643,6 +643,12 @@ class WorkflowEngine:
             return True
 
         round_idx = self.state.state.review_round
+        if max_rounds <= 0:
+            self.state.state.review_history.append("review-skipped")
+            self.state.write()
+            self._mark(RunStatus.REVIEWING, "review-skipped", {"max_rounds": max_rounds})
+            return True
+
         if round_idx >= max_rounds:
             return False
 
@@ -763,7 +769,7 @@ class WorkflowEngine:
                 return {"status": RunStatus.FAILED.value, "error": self.state.state.last_error}
             self._log("Warning: repository has uncommitted changes. Proceeding anyway.")
 
-        max_rounds = max_review_rounds or self.config.workflow.max_review_rounds
+        max_rounds = self.config.workflow.max_review_rounds if max_review_rounds is None else max_review_rounds
         resolved_modes = self._resolve_modes(task, global_mode, role_modes)
         orchestrator = self._agent_for_role("orchestrator", mode=resolved_modes["orchestrator"])
         implementer = self._agent_for_role("implementer", mode=resolved_modes["implementer"])
