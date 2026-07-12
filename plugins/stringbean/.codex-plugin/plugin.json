@@ -1,0 +1,33 @@
+{
+  "name": "stringbean",
+  "version": "0.1.0+codex.20260712172326",
+  "description": "Use Stringbean's sbx orchestrator from inside Codex.",
+  "author": {
+    "name": "Stringbean"
+  },
+  "license": "MIT",
+  "keywords": [
+    "stringbean",
+    "sbx",
+    "orchestration",
+    "codex",
+    "agents"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Stringbean",
+    "shortDescription": "Run sbx orchestration inside Codex.",
+    "longDescription": "Adds a Codex skill for invoking Stringbean's sbx orchestrator with compact final-result handling so Codex can delegate a task to Stringbean and report the visible result without raw transcripts or provider logs.",
+    "developerName": "Stringbean",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use Stringbean sbx for this task.",
+      "Delegate this through sbx and summarize the result.",
+      "Run sbx in rw mode for this implementation."
+    ]
+  }
+}

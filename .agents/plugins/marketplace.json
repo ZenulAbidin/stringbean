@@ -1,0 +1,20 @@
+{
+  "name": "stringbean-local",
+  "interface": {
+    "displayName": "Stringbean Local"
+  },
+  "plugins": [
+    {
+      "name": "stringbean",
+      "source": {
+        "source": "local",
+        "path": "./plugins/stringbean"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

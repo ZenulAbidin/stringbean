@@ -176,9 +176,32 @@ Then type:
 
 If `sbx` is still being resolved to an old global script, this hook also defines a `sbx` shell function so `sbx ...` always uses the repo-local wrapper.
 
+### Codex plugin wrapper
+
+For use inside Codex, prefer the local Stringbean plugin. It installs a `stringbean:sbx` skill that tells Codex to run `sbx --codex-final` and mirror only the sentinel-wrapped result into the visible final answer.
+
+Install or refresh it with:
+
+```bash
+scripts/install-codex-plugin.sh
+```
+
+Then restart Codex or open a new task and invoke:
+
+```text
+$sbx inspect whether README exists
+$sbx fix typo in README --rw --mode high
+```
+
+If Codex displays the plugin-qualified skill name, choose `stringbean:sbx`.
+
+Codex plugins are installed from this repo's local marketplace at `.agents/plugins/marketplace.json`.
+
 ### Codex custom prompt wrapper
 
 Codex collapses shell-command output into the transcript panel, so Stringbean includes a custom prompt wrapper that tells Codex to run `sbx --codex-final` and copy the sentinel-wrapped result into the visible final answer.
+
+Custom prompts are a legacy slash-command fallback. Use the plugin skill above when available.
 
 Install it with:
 

@@ -57,6 +57,21 @@ def test_sbx_codex_final_emits_sentinel_block():
     assert "'dry_run': True" not in result.stdout
 
 
+def test_codex_plugin_sbx_wrapper_emits_sentinel_block():
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [str(repo / "plugins" / "stringbean" / "scripts" / "sbx-codex"), "enumerate", "bugs", "--dry-run"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "STRINGBEAN_RESULT_START" in result.stdout
+    assert "Status: DRY_RUN" in result.stdout
+    assert "STRINGBEAN_RESULT_END" in result.stdout
+
+
 def test_init_and_status_cycle(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
