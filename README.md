@@ -124,6 +124,8 @@ stringbean run --dry-run "Implement auth checks"
     - `rw` lets write-capable agents modify files. Read-only roles are still diff-checked.
     - Codex agents are launched with explicit approval/sandbox flags instead of inherited defaults: `ro` uses workspace-write with Stringbean diff enforcement; `rw` uses danger-full-access at the provider layer while Stringbean still diff-checks read-only roles.
     - Subagents receive a Stringbean denylist for destructive commands such as `rm`, `sudo`, `dd`, `mkfs`, `shutdown`, and destructive git operations such as `git reset`, `git clean`, and `git push`.
+  - `--policy-retries N`
+    - Retries an agent call after filesystem policy violations by reframing the role prompt as analysis-only and naming the forbidden paths. Default: `workflow.max_policy_violation_retries` (`2`).
   - `--max-review-rounds N`
   - `--no-advisor`
   - `--dry-run`
@@ -275,6 +277,7 @@ workflow:
   advisor_policy: before_implementation
   max_review_rounds: 2
   max_total_agent_calls: 20
+  max_policy_violation_retries: 2
 
 repository:
   require_git: true

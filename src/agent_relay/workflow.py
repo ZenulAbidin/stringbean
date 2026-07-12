@@ -8,7 +8,7 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Type
 
 from rich.console import Console
 from rich.text import Text
@@ -433,6 +433,28 @@ class WorkflowEngine:
         prefix = "read-only profile policy violation" if self.execution_profile == "ro" else "read-only role policy violation"
         return f"{prefix} in {agent_name}: forbidden changes {', '.join(changed_files)}"
 
+    def _policy_retry_prompt(
+        self,
+        prompt: str,
+        *,
+        agent_name: str,
+        role: str,
+        denied_paths: List[str],
+        retry_attempt: int,
+        retry_limit: int,
+    ) -> str:
+        paths = "\n".join(f"- {path}" for path in denied_paths)
+        return (
+            "Policy retry instruction:\n"
+            f"The previous {role} attempt by {agent_name} violated Stringbean filesystem policy.\n"
+            f"Retry {retry_attempt} of {retry_limit} must complete the same role without modifying these forbidden paths:\n"
+            f"{paths}\n"
+            "Reframe the task as analysis-only for this role. Do not edit, delete, rename, move, or type-change "
+            "pre-existing files. If edits are needed, report the needed changes in your structured response instead "
+            "of applying them. Return the required structured output schema.\n\n"
+            f"{prompt}"
+        )
+
     @staticmethod
     def _repo_status_entries(status_text: str) -> Dict[str, str]:
         entries: Dict[str, str] = {}
@@ -446,7 +468,40 @@ class WorkflowEngine:
         return entries
 
     def _repo_status_snapshot(self) -> Dict[str, str]:
-        return self._repo_status_entries(git_status_short(self.repo_root))
+        try:
+            proc = subprocess.run(
+                ["git", "status", "--short", "--untracked-files=all"],
+                cwd=self.repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            return self._repo_status_entries(proc.stdout)
+        except FileNotFoundError:
+            return {}
+
+    def _path_content_state(self, path: str) -> Tuple[str, bytes]:
+        full_path = self.repo_root / path
+        if not full_path.exists():
+            return ("missing", b"")
+        if full_path.is_dir():
+            return ("dir", b"")
+        try:
+            return ("file", full_path.read_bytes())
+        except OSError:
+            return ("unreadable", b"")
+
+    def _repo_baseline_content_snapshot(self, status_entries: Dict[str, str]) -> Dict[str, Tuple[str, bytes]]:
+        snapshot: Dict[str, Tuple[str, bytes]] = {}
+        for status_path in status_entries:
+            old_path, new_path = self._split_status_path(status_path)
+            snapshot[old_path] = self._path_content_state(old_path)
+            if new_path:
+                snapshot[new_path] = self._path_content_state(new_path)
+        return snapshot
+
+    def _repo_content_snapshot_for_paths(self, paths: Iterable[str]) -> Dict[str, Tuple[str, bytes]]:
+        return {path: self._path_content_state(path) for path in paths}
 
     @staticmethod
     def _is_create_only_status(status: Optional[str]) -> bool:
@@ -464,11 +519,24 @@ class WorkflowEngine:
         after: Dict[str, str],
         *,
         allow_creates: bool,
+        before_contents: Optional[Dict[str, Tuple[str, bytes]]] = None,
+        after_contents: Optional[Dict[str, Tuple[str, bytes]]] = None,
     ) -> Tuple[List[str], List[str], List[str]]:
-        changed = sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+        before_contents = before_contents or {}
+        after_contents = after_contents or {}
+        status_changed = {path for path in set(before) | set(after) if before.get(path) != after.get(path)}
+        content_changed = {
+            path
+            for path, before_content in before_contents.items()
+            if before_content != after_contents.get(path, ("missing", b""))
+        }
+        changed = sorted(status_changed | content_changed)
         allowed: List[str] = []
         denied: List[str] = []
         for path in changed:
+            if path in content_changed and path not in status_changed:
+                denied.append(path)
+                continue
             before_status = before.get(path)
             after_status = after.get(path)
             if allow_creates and self._is_create_only_status(after_status):
@@ -575,6 +643,7 @@ class WorkflowEngine:
         expected: Type[BaseModel],
         track_repo_diff: Optional[bool] = None,
         extra_env: Optional[Dict[str, str]] = None,
+        policy_retry_attempt: int = 0,
     ) -> Tuple[AgentCallResult, Optional[str]]:
         if self.state.state.call_count >= self.state.state.total_calls_limit:
             raise RuntimeError("agent call limit reached")
@@ -591,8 +660,10 @@ class WorkflowEngine:
         if track_repo_diff is None:
             track_repo_diff = self._should_track_repo_diff(agent)
         baseline = None
+        baseline_contents: Dict[str, Tuple[str, bytes]] = {}
         if track_repo_diff:
             baseline = self._repo_status_snapshot()
+            baseline_contents = self._repo_baseline_content_snapshot(baseline)
 
         command = list(adapter.build_command(prompt, self.repo_root))
         if not command:
@@ -620,19 +691,20 @@ class WorkflowEngine:
             if not adapter.supports_prompt_transport(agent.prompt_transport):
                 raise RuntimeError(f"agent {agent_name} does not support prompt transport {agent.prompt_transport}")
 
-        prompt = policy_prompt(self.execution_profile, self._effective_permission(agent)) + "\n\n" + prompt
+        agent_prompt = prompt
+        execution_prompt = policy_prompt(self.execution_profile, self._effective_permission(agent)) + "\n\n" + agent_prompt
 
         cfg_prompt = None
         if agent.prompt_transport == "argv":
-            command = command + [prompt]
+            command = command + [execution_prompt]
         elif agent.prompt_transport == "file":
             tmp = tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", suffix=".md")
-            tmp.write(prompt)
+            tmp.write(execution_prompt)
             tmp.flush()
             tmp.close()
             command = command + [tmp.name]
         else:
-            cfg_prompt = prompt
+            cfg_prompt = execution_prompt
 
         env_overrides = dict(agent.environment_overrides)
         if extra_env:
@@ -724,18 +796,22 @@ class WorkflowEngine:
         )
 
         changed_paths: List[str] | None = None
+        denied_paths: List[str] = []
         if track_repo_diff and baseline is not None:
             after = self._repo_status_snapshot()
+            after_contents = self._repo_content_snapshot_for_paths(baseline_contents)
             changed_paths, allowed_paths, denied_paths = self._classify_repo_delta(
                 baseline,
                 after,
                 allow_creates=self.execution_profile == "ro",
+                before_contents=baseline_contents,
+                after_contents=after_contents,
             )
             call_result.diff_delta_files = changed_paths
             call_result.metadata["allowed_create_paths"] = allowed_paths
             call_result.metadata["denied_change_paths"] = denied_paths
             if denied_paths:
-                self._rollback_read_only_changes(changed_paths, baseline, after)
+                self._rollback_read_only_changes(changed_paths, baseline, after, baseline_contents)
                 parse_error = self._policy_violation_message(agent_name, denied_paths)
                 call_result.parse_error = parse_error
         call_result.metadata.update(
@@ -744,6 +820,8 @@ class WorkflowEngine:
                 "effective_permission": self._effective_permission(agent),
                 "denied_commands": list(DENIED_COMMANDS),
                 "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
+                "policy_retry_attempt": policy_retry_attempt,
+                "policy_retry_limit": self.config.workflow.max_policy_violation_retries,
             }
         )
         if model_payload and parse_error is None:
@@ -751,8 +829,46 @@ class WorkflowEngine:
 
         self.state.state.call_count += 1
         idx = self._run_dir_index()
-        self.call_store.write_call_files(idx, agent_name, prompt, call_result)
+        self.call_store.write_call_files(idx, agent_name, execution_prompt, call_result)
         self.state.write()
+
+        retry_limit = max(0, int(self.config.workflow.max_policy_violation_retries))
+        if denied_paths and policy_retry_attempt < retry_limit:
+            next_attempt = policy_retry_attempt + 1
+            self._mark(
+                stage,
+                "policy-retry",
+                {
+                    "agent": agent_name,
+                    "role": role,
+                    "attempt": next_attempt,
+                    "limit": retry_limit,
+                    "denied_paths": denied_paths,
+                },
+            )
+            self._progress(
+                f"Progress: Retrying {role} {agent_name} after policy violation "
+                f"({next_attempt}/{retry_limit}); forbidden paths: {', '.join(denied_paths[:4])}"
+                f"{'…' if len(denied_paths) > 4 else ''}."
+            )
+            retry_prompt = self._policy_retry_prompt(
+                agent_prompt,
+                agent_name=agent_name,
+                role=role,
+                denied_paths=denied_paths,
+                retry_attempt=next_attempt,
+                retry_limit=retry_limit,
+            )
+            return await self._run_agent(
+                agent_name,
+                role,
+                stage,
+                retry_prompt,
+                expected,
+                track_repo_diff=track_repo_diff,
+                extra_env=extra_env,
+                policy_retry_attempt=next_attempt,
+            )
 
         return call_result, parse_error
 
@@ -784,18 +900,40 @@ class WorkflowEngine:
             text=True,
         )
 
+    def _restore_path_content(self, path: str, content_state: Tuple[str, bytes]) -> None:
+        kind, content = content_state
+        full_path = self.repo_root / path
+        if kind == "missing":
+            self._remove_created_path(path)
+            return
+        if kind == "dir":
+            if full_path.exists() and not full_path.is_dir():
+                self._remove_created_path(path)
+            full_path.mkdir(parents=True, exist_ok=True)
+            return
+        if full_path.exists() and full_path.is_dir():
+            shutil.rmtree(full_path, ignore_errors=True)
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_bytes(content)
+
     def _rollback_read_only_changes(
         self,
         changed_paths: List[str],
         before: Optional[Dict[str, str]] = None,
         after: Optional[Dict[str, str]] = None,
+        before_contents: Optional[Dict[str, Tuple[str, bytes]]] = None,
     ) -> None:
         before = before or {}
         after = after or {}
+        before_contents = before_contents or {}
         for path in changed_paths:
             old_path, new_path = self._split_status_path(path)
             after_status = after.get(path)
             before_status = before.get(path)
+
+            if path in before_contents:
+                self._restore_path_content(path, before_contents[path])
+                continue
 
             if self._is_create_only_status(after_status) and before_status is None:
                 self._remove_created_path(new_path or old_path)

@@ -749,6 +749,177 @@ elif role == \"reviewer\":
     assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "baseline\\n"
 
 
+def _write_policy_retry_agent(repo: Path) -> Path:
+    script = repo / "policy_retry_agent.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+
+
+def count(name):
+    path = Path(os.environ["COUNT_FILE"])
+    state = {}
+    if path.exists():
+        state = json.loads(path.read_text(encoding="utf-8"))
+    state[name] = int(state.get(name, 0)) + 1
+    path.write_text(json.dumps(state), encoding="utf-8")
+    return state[name]
+
+
+def emit(payload):
+    print(json.dumps(payload))
+
+
+role = os.environ.get("AGENT_ROLE", "planner")
+if role == "planner":
+    emit({
+        "summary": "plan",
+        "assumptions": [],
+        "tasks": [{
+            "id": "task-1",
+            "title": "Audit",
+            "description": "Audit only",
+            "dependencies": [],
+            "recommended_role": "implementer",
+            "permissions": "read_write",
+            "verification": []
+        }],
+        "risks": [],
+        "advisor_questions": []
+    })
+elif role == "advisor":
+    attempt = count("advisor")
+    if os.environ.get("ALWAYS_VIOLATE", "0") == "1" or attempt == 1:
+        Path("tracked.txt").write_text(f"advisor changed tracked file on attempt {attempt}\\n", encoding="utf-8")
+    emit({
+        "verdict": "approve",
+        "severity": "none",
+        "summary": f"advisor attempt {attempt}",
+        "blockers": [],
+        "concerns": [],
+        "recommendations": []
+    })
+elif role == "implementer":
+    emit({
+        "status": "completed",
+        "summary": "implementation skipped for audit",
+        "files_changed": [],
+        "commands_run": [],
+        "tests": [],
+        "remaining_issues": [],
+        "handoff_notes": []
+    })
+elif role == "reviewer":
+    emit({
+        "verdict": "approve",
+        "summary": "review approved",
+        "blocking_issues": [],
+        "non_blocking_issues": [],
+        "required_fixes": [],
+        "tests_recommended": []
+    })
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def test_policy_violation_retries_with_reframed_prompt(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    script = _write_policy_retry_agent(tmp_path)
+    _commit_all(tmp_path)
+    count_file = tmp_path.parent / f"{tmp_path.name}-policy-count.json"
+
+    cfg = _build_config(
+        script,
+        planner_role="planner",
+        advisor_role="advisor",
+        implementer_role="implementer",
+        reviewer_role="reviewer",
+    )
+    for agent in cfg.agents.values():
+        agent.environment_overrides["COUNT_FILE"] = str(count_file)
+
+    run_dir = create_new_run(tmp_path, "run-policy-retry", "Retry policy", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+    result = asyncio.run(engine.run("Retry policy"))
+
+    assert result["status"] == "COMPLETED"
+    assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "baseline\n"
+    advisor_calls = sorted(path for path in run_dir.calls_dir.iterdir() if "advisor" in path.name)
+    assert len(advisor_calls) == 2
+    assert "Policy retry instruction" in advisor_calls[1].joinpath("prompt.md").read_text(encoding="utf-8")
+    assert json.loads(count_file.read_text(encoding="utf-8"))["advisor"] == 2
+
+
+def test_policy_violation_retry_detects_already_dirty_file_changes(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "tracked.txt").write_text("committed baseline\n", encoding="utf-8")
+    script = _write_policy_retry_agent(tmp_path)
+    _commit_all(tmp_path)
+    (tmp_path / "tracked.txt").write_text("dirty baseline\n", encoding="utf-8")
+    count_file = tmp_path.parent / f"{tmp_path.name}-policy-dirty-count.json"
+
+    cfg = _build_config(
+        script,
+        planner_role="planner",
+        advisor_role="advisor",
+        implementer_role="implementer",
+        reviewer_role="reviewer",
+    )
+    for agent in cfg.agents.values():
+        agent.environment_overrides["COUNT_FILE"] = str(count_file)
+
+    run_dir = create_new_run(tmp_path, "run-policy-retry-dirty", "Retry policy", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+    result = asyncio.run(engine.run("Retry policy"))
+
+    assert result["status"] == "COMPLETED"
+    assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "dirty baseline\n"
+    advisor_calls = sorted(path for path in run_dir.calls_dir.iterdir() if "advisor" in path.name)
+    assert len(advisor_calls) == 2
+    assert "Policy retry instruction" in advisor_calls[1].joinpath("prompt.md").read_text(encoding="utf-8")
+    assert json.loads(count_file.read_text(encoding="utf-8"))["advisor"] == 2
+
+
+def test_policy_violation_retry_limit_is_enforced(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    script = _write_policy_retry_agent(tmp_path)
+    _commit_all(tmp_path)
+    count_file = tmp_path.parent / f"{tmp_path.name}-policy-count.json"
+
+    cfg = _build_config(
+        script,
+        planner_role="planner",
+        advisor_role="advisor",
+        implementer_role="implementer",
+        reviewer_role="reviewer",
+    )
+    cfg.workflow.max_policy_violation_retries = 1
+    cfg.agents["advisor"].environment_overrides["ALWAYS_VIOLATE"] = "1"
+    for agent in cfg.agents.values():
+        agent.environment_overrides["COUNT_FILE"] = str(count_file)
+
+    run_dir = create_new_run(tmp_path, "run-policy-retry-limit", "Retry policy", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    with pytest.raises(RuntimeError, match="read-only"):
+        asyncio.run(engine.run("Retry policy"))
+
+    assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "baseline\n"
+    advisor_calls = sorted(path for path in run_dir.calls_dir.iterdir() if "advisor" in path.name)
+    assert len(advisor_calls) == 2
+    assert json.loads(count_file.read_text(encoding="utf-8"))["advisor"] == 2
+
+
 def test_role_mode_override_selects_matching_agent(tmp_path: Path):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")

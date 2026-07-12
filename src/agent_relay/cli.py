@@ -776,6 +776,11 @@ def run(
     ro: bool = typer.Option(False, "--ro", "-ro", help="Read-only execution profile. This is the default."),
     rw: bool = typer.Option(False, "--rw", "-rw", help="Read-write execution profile. Allows write-capable agents to modify files."),
     max_review_rounds: Optional[int] = typer.Option(None, "--max-review-rounds"),
+    policy_retries: Optional[int] = typer.Option(
+        None,
+        "--policy-retries",
+        help="Retry an agent call after filesystem policy violations by reframing the role prompt. Default comes from workflow.max_policy_violation_retries.",
+    ),
     no_advisor: bool = typer.Option(False, "--no-advisor"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     quiet: bool = typer.Option(False, "--quiet"),
@@ -840,10 +845,14 @@ def run(
         )
     if max_review_rounds is not None and max_review_rounds < 0:
         raise typer.BadParameter("max-review-rounds must be 0 or higher.")
+    if policy_retries is not None and policy_retries < 0:
+        raise typer.BadParameter("policy-retries must be 0 or higher.")
     if codex_progress_interval <= 0:
         raise typer.BadParameter("codex-progress-interval must be greater than 0.")
 
     _apply_overrides(cfg, orchestrator, advisor, implementer, reviewer)
+    if policy_retries is not None:
+        cfg.workflow.max_policy_violation_retries = policy_retries
     _apply_output_flags(cfg, quiet=quiet or codex_final, no_agent_stream=no_agent_stream or codex_final)
     effective_codex_progress = bool(codex_final and codex_progress)
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)

@@ -5,8 +5,8 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [stringbean run flags]
-  sbx "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [--no-codex-progress] [stringbean run flags]
+  sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--policy-retries N] [--no-agent-stream] [--codex-final] [stringbean run flags]
+  sbx "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--policy-retries N] [--no-agent-stream] [--codex-final] [--no-codex-progress] [stringbean run flags]
   sbx run TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [more flags]
   stringbean sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [more flags]
   stringbean run "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--no-agent-stream] [--codex-final] [more flags]
@@ -17,6 +17,7 @@ Examples:
   sbx run "Build retry logic" --rw --mode high
   sbx "Quietly inspect the repo" --no-agent-stream
   sbx "Inspect through Codex TUI" --codex-final
+  sbx "Audit without retrying policy violations" --policy-retries 0
   sbx "Inspect through Codex TUI silently" --codex-final --no-codex-progress
   stringbean sbx "Build retry logic" --rw --mode high
 EOF
@@ -306,7 +307,7 @@ fi
 
 option_takes_value() {
   case "$1" in
-    --config|--orchestrator|--advisor|--implementer|--reviewer|--mode|--orchestrator-mode|--advisor-mode|--implementer-mode|--reviewer-mode|--max-review-rounds|--run-id|--profile|--codex-progress-interval)
+    --config|--orchestrator|--advisor|--implementer|--reviewer|--mode|--orchestrator-mode|--advisor-mode|--implementer-mode|--reviewer-mode|--max-review-rounds|--policy-retries|--run-id|--profile|--codex-progress-interval)
       return 0
       ;;
     *)

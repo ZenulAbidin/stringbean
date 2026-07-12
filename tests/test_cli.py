@@ -25,6 +25,7 @@ def test_run_help_lists_agent_stream_switch():
     assert "--codex-final" in result.stdout
     assert "--codex-progress" in result.stdout
     assert "heartbeat lines" in result.stdout
+    assert "--policy-retries" in result.stdout
     assert "--rw" in result.stdout
     assert "--ro" in result.stdout
 

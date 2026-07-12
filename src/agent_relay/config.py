@@ -98,6 +98,7 @@ class WorkflowConfig(BaseModel):
     advisor_policy: str = "before_implementation"
     max_review_rounds: int = 2
     max_total_agent_calls: int = 20
+    max_policy_violation_retries: int = 2
     parallel_read_only_agents: bool = True
     parallel_write_agents: bool = False
 
@@ -115,6 +116,13 @@ class WorkflowConfig(BaseModel):
     def _validate_positive_int(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("workflow limits must be positive integers")
+        return int(value)
+
+    @field_validator("max_policy_violation_retries")
+    @classmethod
+    def _validate_non_negative_int(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("workflow.max_policy_violation_retries must be 0 or higher")
         return int(value)
 
 
