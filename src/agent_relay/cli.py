@@ -12,6 +12,7 @@ import typer
 import yaml
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from .config import (
     AgentConfig,
@@ -683,17 +684,21 @@ def _print_run_summary(summary: dict, *, dry_run: bool) -> None:
     review_round = summary.get("review_round")
     event_log = summary.get("event_log")
 
-    console.print(f"Status: {status}")
+    _print_labeled("Status", str(status))
     if result:
-        console.print(f"Result: {result}")
+        _print_labeled("Result", str(result))
     if errors:
-        console.print(f"Error: {errors}")
+        _print_labeled("Error", str(errors))
     if implemented:
-        console.print(f"Tasks: {', '.join(str(item) for item in implemented)}")
+        _print_labeled("Tasks", ", ".join(str(item) for item in implemented))
     if review_round is not None:
-        console.print(f"Review rounds: {review_round}")
+        _print_labeled("Review rounds", str(review_round))
     if event_log:
-        console.print(f"Artifacts: {Path(str(event_log)).parent}")
+        _print_labeled("Artifacts", str(Path(str(event_log)).parent))
+
+
+def _print_labeled(label: str, value: str) -> None:
+    console.print(Text.assemble((label, "bold white"), (": ", "bold white"), (value, "white")))
 
 
 def _resolve_execution_profile(profile: str, ro: bool, rw: bool) -> str:
@@ -795,7 +800,7 @@ def run(
     except RuntimeError as exc:
         _print_run_failure(selected_run_id, task, exc)
         raise typer.Exit(code=1) from exc
-    console.print(f"Run ID: {out['run_id']}")
+    _print_labeled("Run ID", str(out["run_id"]))
     _print_run_summary(out["summary"], dry_run=dry_run)
 
 
@@ -867,7 +872,7 @@ def resume(
     except RuntimeError as exc:
         _print_run_failure(run_id, state.state.task, exc)
         raise typer.Exit(code=1) from exc
-    console.print(f"Run ID: {run_id}")
+    _print_labeled("Run ID", run_id)
     _print_run_summary(result, dry_run=False)
 
 

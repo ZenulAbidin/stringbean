@@ -11,6 +11,7 @@ import subprocess
 from typing import Dict, List, Optional, Tuple, Type
 
 from rich.console import Console
+from rich.text import Text
 
 from .connectors import Adapter, AdapterCapabilities, ClaudeConnector, CodexConnector, GenericConnector, GrokConnector
 from .config import Config
@@ -177,11 +178,35 @@ class WorkflowEngine:
         if self._agent_stream_open_line:
             print("", flush=True)
             self._agent_stream_open_line = False
-        print(message, flush=True)
+        self._print_stream_line(message)
 
     def _write_agent_stream_line(self, line: str) -> None:
-        print(line, flush=True)
+        self._print_stream_line(line)
         self._agent_stream_open_line = False
+
+    def _print_stream_line(self, line: str) -> None:
+        self.console.print(self._styled_stream_line(line))
+
+    @staticmethod
+    def _styled_stream_line(line: str) -> Text:
+        label_styles = {
+            "Tool Call": "bold white",
+            "Executed": "bold white",
+            "Plan": "bold white",
+            "Result": "bold white",
+            "Review": "bold white",
+            "Response": "bold white",
+            "[stringbean]": "bold white",
+        }
+        for label, style in label_styles.items():
+            prefix = f"{label}: "
+            if line.startswith(prefix):
+                return Text.assemble((label, style), (": ", style), (line[len(prefix) :], "white"))
+            if line.startswith(label) and label.startswith("["):
+                return Text(line, style)
+        if line.startswith("  "):
+            return Text(line, style="white")
+        return Text(line, style="white")
 
     def _ensure_agent_stream_formatter(self) -> LiveStreamFormatter:
         if self._agent_stream_formatter is None:

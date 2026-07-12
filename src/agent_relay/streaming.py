@@ -21,7 +21,8 @@ class LiveStreamFormatter:
         self._write_line = write_line
         self._buffer = ""
         self._suppress_prompt_echo = False
-        self._suppress_tool_output = False
+        self._capturing_tool_output = False
+        self._tool_output_remaining = 0
         self._suppress_next_token_count = False
         self._json_buffer: list[str] | None = None
         self._fenced_json_buffer: list[str] | None = None
@@ -81,14 +82,19 @@ class LiveStreamFormatter:
             self._suppress_prompt_echo = True
             return []
 
-        if self._suppress_tool_output:
+        if self._capturing_tool_output:
             if stripped in {"codex", "assistant"}:
-                self._suppress_tool_output = False
+                self._capturing_tool_output = False
+                self._tool_output_remaining = 0
                 return []
             if stripped.startswith(("{", "[")) or stripped.lower() in {"```json", "```jsonc"}:
-                self._suppress_tool_output = False
+                self._capturing_tool_output = False
+                self._tool_output_remaining = 0
             else:
-                return []
+                if self._tool_output_remaining <= 0 or not stripped:
+                    return []
+                self._tool_output_remaining -= 1
+                return [f"  {decode_visible_escapes(_shorten_line(stripped))}"]
 
         if self._fenced_json_buffer is not None:
             if stripped == "```":
@@ -120,7 +126,8 @@ class LiveStreamFormatter:
 
         tool_result = _format_tool_result(stripped)
         if tool_result:
-            self._suppress_tool_output = True
+            self._capturing_tool_output = True
+            self._tool_output_remaining = 3
             return [tool_result]
 
         if stripped.startswith(("{", "[")):
@@ -255,7 +262,7 @@ def _format_structured_payload(payload: dict[str, Any]) -> list[str] | None:
     summary = str(payload.get("summary") or "").strip()
 
     if "tasks" in payload and isinstance(payload.get("tasks"), list):
-        lines = [f"plan: {summary}" if summary else "plan:"]
+        lines = [f"Plan: {summary}" if summary else "Plan:"]
         for task in payload.get("tasks", [])[:8]:
             if not isinstance(task, dict):
                 continue
@@ -266,7 +273,7 @@ def _format_structured_payload(payload: dict[str, Any]) -> list[str] | None:
 
     if "status" in payload:
         status = str(payload.get("status") or "").strip()
-        head = f"result: {status}" if status else "result:"
+        head = f"Result: {status}" if status else "Result:"
         if summary:
             head = f"{head} — {summary}"
         lines = [head]
@@ -283,7 +290,7 @@ def _format_structured_payload(payload: dict[str, Any]) -> list[str] | None:
 
     if "verdict" in payload:
         verdict = str(payload.get("verdict") or "").strip()
-        head = f"review: {verdict}" if verdict else "review:"
+        head = f"Review: {verdict}" if verdict else "Review:"
         if summary:
             head = f"{head} — {summary}"
         lines = [head]
@@ -296,7 +303,7 @@ def _format_structured_payload(payload: dict[str, Any]) -> list[str] | None:
         return lines
 
     if summary:
-        return [f"response: {summary}"]
+        return [f"Response: {summary}"]
 
     return None
 
@@ -411,14 +418,14 @@ def _format_tool_command(stripped: str) -> str | None:
     ):
         return None
     command = stripped.split(" in ", 1)[0]
-    return f"tool: {command}"
+    return f"Tool Call: {command}"
 
 
 def _format_tool_result(stripped: str) -> str | None:
     match = re.match(r"^(succeeded|failed) in ([^:]+):$", stripped)
     if not match:
         return None
-    return f"tool output: {match.group(1)} in {match.group(2)}"
+    return f"Executed: {match.group(1)} in {match.group(2)}"
 
 
 def _starts_prompt_echo(stripped: str) -> bool:
@@ -444,3 +451,9 @@ def _should_suppress_noise(stripped: str) -> bool:
         "hook:",
     )
     return stripped.startswith(prefixes)
+
+
+def _shorten_line(line: str, limit: int = 240) -> str:
+    if len(line) <= limit:
+        return line
+    return f"{line[: limit - 1]}…"

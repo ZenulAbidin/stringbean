@@ -153,7 +153,10 @@ def test_agent_stream_decodes_visible_escapes(tmp_path: Path, capsys):
     engine._log("[stringbean] next")
 
     captured = capsys.readouterr()
-    assert captured.out == "alpha\nbeta\t1\n[stringbean] next\n"
+    lines = captured.out.splitlines()
+    assert lines[0] == "alpha"
+    assert lines[1].replace("    ", "\t") == "beta\t1"
+    assert lines[2] == "[stringbean] next"
 
 
 def test_agent_stream_formats_json_events(tmp_path: Path, capsys):
@@ -205,7 +208,7 @@ def test_agent_stream_collapses_pretty_structured_json(tmp_path: Path, capsys):
     )
 
     captured = capsys.readouterr()
-    assert captured.out == "plan: Use README.md as the answer.\n  - Confirm README\n  - Report result\n"
+    assert captured.out == "Plan: Use README.md as the answer.\n  - Confirm README\n  - Report result\n"
 
 
 def test_agent_stream_hides_tool_output_body_and_tokens(tmp_path: Path, capsys):
@@ -219,7 +222,10 @@ def test_agent_stream_hides_tool_output_body_and_tokens(tmp_path: Path, capsys):
     engine._stream_agent_chunk(
         '/usr/bin/zsh -lc "sed -n 1,80p README.md" in /repo\n'
         "succeeded in 12ms:\n"
-        "HUGE README BODY SHOULD NOT PRINT\n"
+        "first useful line\n"
+        "second useful line\n"
+        "third useful line\n"
+        "FOURTH LINE SHOULD NOT PRINT\n"
         "codex\n"
         "tokens used\n"
         "1,234\n"
@@ -229,12 +235,23 @@ def test_agent_stream_hides_tool_output_body_and_tokens(tmp_path: Path, capsys):
 
     captured = capsys.readouterr()
     assert captured.out == (
-        'tool: /usr/bin/zsh -lc "sed -n 1,80p README.md"\n'
-        "tool output: succeeded in 12ms\n"
-        "result: completed — README.md exists.\n"
+        'Tool Call: /usr/bin/zsh -lc "sed -n 1,80p README.md"\n'
+        "Executed: succeeded in 12ms\n"
+        "  first useful line\n"
+        "  second useful line\n"
+        "  third useful line\n"
+        "Result: completed — README.md exists.\n"
     )
-    assert "HUGE README BODY" not in captured.out
+    assert "FOURTH LINE" not in captured.out
     assert "1,234" not in captured.out
+
+
+def test_agent_stream_labels_have_terminal_styles():
+    line = WorkflowEngine._styled_stream_line("Tool Call: ls -1")
+
+    assert line.plain == "Tool Call: ls -1"
+    assert line.spans
+    assert str(line.spans[0].style) == "bold white"
 
 
 def test_advisor_revision_leads_to_revised_plan(tmp_path: Path):
