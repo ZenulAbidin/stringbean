@@ -1,0 +1,14 @@
+.agent-relay-fake-state.json
+.agent-relay/runs/
+.pytest_cache/
+.stringbean/runs/
+__pycache__/
+*.py[cod]
+*$py.class
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.venv/
+venv/

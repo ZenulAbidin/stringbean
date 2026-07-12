@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sbx "TASK" [--mode auto|low|medium|high] [stringbean run flags]
+  sbx run "TASK" [--mode auto|low|medium|high] [more flags]
+  stringbean sbx "TASK" [--mode auto|low|medium|high] [more flags]
+  stringbean run "TASK" [--mode auto|low|medium|high] [more flags]
+
+Examples:
+  sbx "Add a typo fix in docs"
+  sbx run "Build retry logic" --mode high
+  stringbean sbx "Build retry logic" --mode high
+EOF
+}
+
+is_project_root() {
+  local dir="$1"
+  [[ -f "$dir/pyproject.toml" && -f "$dir/README.md" && -d "$dir/src/agent_relay" ]]
+}
+
+find_repo_root() {
+  local dir="$1"
+  while [[ -n "$dir" && "$dir" != "/" ]]; do
+    if is_project_root "$dir"; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+}
+
+find_repo_under_dir() {
+  local base_dir="$1"
+  local found
+
+  if [[ -z "${base_dir-}" || ! -d "$base_dir" ]]; then
+    return 1
+  fi
+
+  found="$(find "$base_dir" -maxdepth 4 -type f -name pyproject.toml 2>/dev/null | while IFS= read -r file; do
+    local root_dir
+    root_dir="$(dirname "$file")"
+    if is_project_root "$root_dir"; then
+      printf '%s\n' "$root_dir"
+      break
+    fi
+  done | head -n 1)"
+
+  if [[ -n "$found" ]]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+
+  return 1
+}
+
+read_root_pointer() {
+  local file="$1"
+  local candidate
+
+  if [[ ! -f "$file" ]]; then
+    return 1
+  fi
+
+  IFS= read -r candidate < "$file" || return 1
+  if is_project_root "$candidate"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
+find_common_repo_root() {
+  local candidate
+  local roots=()
+
+  if [[ -n "${XDG_CONFIG_HOME-}" ]]; then
+    roots+=("$(read_root_pointer "$XDG_CONFIG_HOME/stringbean/source-root" || true)")
+  fi
+  if [[ -n "${HOME-}" ]]; then
+    roots+=("$(read_root_pointer "$HOME/.stringbean/source-root" || true)")
+    roots+=("$HOME/Documents/stringbean")
+    roots+=("$HOME/stringbean")
+    roots+=("$HOME/src/stringbean")
+    roots+=("$HOME/projects/stringbean")
+  fi
+  roots+=("/opt/stringbean")
+  roots+=("/usr/local/share/stringbean")
+
+  for candidate in "${roots[@]}"; do
+    if [[ -n "$candidate" ]] && is_project_root "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  if [[ -n "${HOME-}" && -d "$HOME/Documents" ]]; then
+    find_repo_under_dir "$HOME/Documents" && return 0
+  fi
+
+  return 1
+}
+
+python_has_deps() {
+  local py="$1"
+  "$py" - <<'PY' >/dev/null 2>&1
+import importlib
+
+required = ("pydantic", "typer", "rich", "yaml")
+for module_name in required:
+    importlib.import_module(module_name)
+PY
+}
+
+bootstrap_runtime_python() {
+  local bootstrap_py="$1"
+  local runtime_dir="$ROOT_DIR/.stringbean-runtime"
+  local venv_py="$runtime_dir/bin/python"
+
+  if [[ ! -x "$venv_py" ]]; then
+    "$bootstrap_py" -m venv --system-site-packages "$runtime_dir" >/dev/null 2>&1 || return 1
+  fi
+
+  if python_has_deps "$venv_py"; then
+    printf '%s\n' "$venv_py"
+    return 0
+  fi
+
+  if "$venv_py" -m pip install --quiet --disable-pip-version-check --upgrade pip >/dev/null 2>&1; then
+    "$venv_py" -m pip install --quiet --disable-pip-version-check \
+      "pydantic>=2.7" "typer>=0.12" "rich>=13.7" "PyYAML>=6.0" >/dev/null 2>&1
+  fi
+
+  if python_has_deps "$venv_py"; then
+    printf '%s\n' "$venv_py"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_python() {
+  local fallback=""
+  local fallback_path=""
+  local candidates=()
+
+  if [[ -n "${STRINGBEAN_PYTHON-}" ]]; then
+    candidates+=("${STRINGBEAN_PYTHON}")
+  fi
+  candidates+=(python3.12 python3.11 python3.10 python3 python)
+
+  for py in "${candidates[@]}"; do
+    if ! command -v "$py" >/dev/null 2>&1; then
+      continue
+    fi
+
+    local py_path
+    py_path="$(command -v "$py")"
+    if [[ ! -x "$py_path" ]]; then
+      continue
+    fi
+
+    if [[ -z "$fallback" ]]; then
+      fallback="$py"
+      fallback_path="$py_path"
+    fi
+
+    if python_has_deps "$py_path"; then
+      printf '%s\n' "$py_path"
+      return 0
+    fi
+  done
+
+  if [[ -n "$fallback" ]]; then
+    local runtime_py
+    runtime_py="$(bootstrap_runtime_python "$fallback_path" || true)"
+    if [[ -n "${runtime_py-}" && -x "$runtime_py" && "$runtime_py" == *".stringbean-runtime"* ]]; then
+      echo "Using bundled local runtime: $runtime_py"
+      printf '%s\n' "$runtime_py"
+      return 0
+    fi
+
+    if python_has_deps "$fallback_path"; then
+      printf '%s\n' "$fallback_path"
+      return 0
+    fi
+
+    echo "Error: Python $fallback does not currently provide required packages (pydantic, typer, rich, PyYAML)."
+    echo "Install them globally, or set STRINGBEAN_PYTHON to a Python with these deps."
+    echo "Tip: STRINGBEAN_PYTHON=/usr/bin/python3.10 ./scripts/sbx ..."
+    return 1
+  fi
+
+  echo "Error: no python interpreter found on PATH."
+  return 1
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR=""
+
+if is_project_root "$DEFAULT_ROOT"; then
+  ROOT_DIR="$DEFAULT_ROOT"
+fi
+
+if [[ -z "$ROOT_DIR" && -n "${STRINGBEAN_ROOT-}" ]]; then
+  if is_project_root "$STRINGBEAN_ROOT"; then
+    ROOT_DIR="$STRINGBEAN_ROOT"
+  else
+    ROOT_DIR="$(find_repo_under_dir "$STRINGBEAN_ROOT" || true)"
+  fi
+fi
+
+if [[ -z "$ROOT_DIR" ]]; then
+  CANDIDATE_ROOT="$(find_repo_root "$(pwd)" || true)"
+  if [[ -n "${CANDIDATE_ROOT-}" ]]; then
+    ROOT_DIR="$CANDIDATE_ROOT"
+  fi
+fi
+
+if [[ -z "$ROOT_DIR" ]]; then
+  GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "${GIT_ROOT-}" ]] && is_project_root "$GIT_ROOT"; then
+    ROOT_DIR="$GIT_ROOT"
+  fi
+fi
+
+if [[ -z "$ROOT_DIR" ]]; then
+  COMMON_ROOT="$(find_common_repo_root || true)"
+  if [[ -n "${COMMON_ROOT-}" ]]; then
+    ROOT_DIR="$COMMON_ROOT"
+  fi
+fi
+
+if ! is_project_root "$ROOT_DIR"; then
+  echo "Error: could not locate stringbean project root. Set STRINGBEAN_ROOT to the repo path."
+  exit 1
+fi
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+FIRST_ARG="${1-}"
+TASK=""
+
+case "$FIRST_ARG" in
+  sbx|run)
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: $FIRST_ARG requires a task argument."
+      usage
+      exit 1
+    fi
+    shift
+    TASK="$1"
+    shift
+    ;;
+  /sbx)
+    if [[ $# -lt 2 ]]; then
+      echo 'Usage: /sbx "TASK" [flags]'
+      usage
+      exit 1
+    fi
+    shift
+    TASK="$1"
+    shift
+    ;;
+  *)
+    TASK="$1"
+    if [[ -z "${TASK// }" ]]; then
+      echo "Task cannot be empty."
+      usage
+      exit 1
+    fi
+    shift
+    ;;
+esac
+
+if [[ -z "${TASK// }" ]]; then
+  echo "Task cannot be empty."
+  usage
+  exit 1
+fi
+
+PYTHON_BIN="$(resolve_python)"
+if [[ ! -x "$(command -v "$PYTHON_BIN")" ]]; then
+  echo "Error: cannot execute $PYTHON_BIN"
+  exit 1
+fi
+
+
+cd "$ROOT_DIR"
+
+PYTHONPATH="$ROOT_DIR/src" "$PYTHON_BIN" -m agent_relay.cli run "$TASK" "$@"
