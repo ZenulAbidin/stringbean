@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable
 
-from .config import PROJECT_DIR_NAME, LEGACY_PROJECT_DIR_NAME
+from .config import PROJECT_DIR_NAME
 
 
 TEMPLATES = {
@@ -35,11 +35,9 @@ def load_template(name: str, project_root: Path) -> str:
     if name not in TEMPLATES:
         raise TemplateNotFound(name)
     file_name = TEMPLATES[name]
-    local_roots = [project_root / PROJECT_DIR_NAME, project_root / LEGACY_PROJECT_DIR_NAME]
-    for root in local_roots:
-        local = root / "templates" / file_name
-        if local.exists():
-            return local.read_text(encoding="utf-8")
+    local = project_root / PROJECT_DIR_NAME / "templates" / file_name
+    if local.exists():
+        return local.read_text(encoding="utf-8")
     return _pkg_template_path(file_name).read_text(encoding="utf-8")
 
 

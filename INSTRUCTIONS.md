@@ -65,9 +65,9 @@ User experience
 
 A typical workflow should look like:
 
-agent-relay init
-agent-relay doctor
-agent-relay run "Add rate limiting to the public API"
+stringbean init
+stringbean doctor
+stringbean run "Add rate limiting to the public API"
 
 The terminal should display a concise stream such as:
 
@@ -85,22 +85,22 @@ Run: 20260711-143122-rate-limiting
 Run completed.
 Tests: 48 passed
 Files changed: 7
-Log: .agent-relay/runs/20260711-143122-rate-limiting/
+Log: .stringbean/runs/20260711-143122-rate-limiting/
 
 The user must also be able to run:
 
-agent-relay status
-agent-relay status <run-id>
-agent-relay resume <run-id>
-agent-relay logs <run-id>
-agent-relay agents
-agent-relay doctor
+stringbean status
+stringbean status <run-id>
+stringbean resume <run-id>
+stringbean logs <run-id>
+stringbean agents
+stringbean doctor
 
 Configuration
 
 Create a project-local configuration file:
 
-.agent-relay/config.yaml
+.stringbean/config.yaml
 
 Example:
 
@@ -174,7 +174,7 @@ Never use "shell=True".
 
 CLI detection
 
-"agent-relay init" and "agent-relay doctor" must:
+"stringbean init" and "stringbean doctor" must:
 
 - Detect executables using "shutil.which"
 - Check Codex, Claude, and Grok independently
@@ -270,7 +270,7 @@ Requirements:
 
 Every invocation receives a stable run ID and directory:
 
-.agent-relay/runs/<run-id>/
+.stringbean/runs/<run-id>/
 
 Store:
 
@@ -526,15 +526,15 @@ Practical commands
 
 Implement:
 
-"agent-relay init"
+"stringbean init"
 
-- Create ".agent-relay/config.yaml"
-- Create ".agent-relay/templates/" only when the user chooses local overrides
+- Create ".stringbean/config.yaml"
+- Create ".stringbean/templates/" only when the user chooses local overrides
 - Detect available CLIs
 - Print the generated agent configuration
 - Avoid overwriting existing configuration without confirmation
 
-"agent-relay doctor"
+"stringbean doctor"
 
 Check:
 
@@ -551,7 +551,7 @@ Check:
 
 Exit nonzero when required functionality is unavailable.
 
-"agent-relay run TASK"
+"stringbean run TASK"
 
 Options:
 
@@ -575,7 +575,7 @@ Options:
 
 It must not launch agents.
 
-"agent-relay resume RUN_ID"
+"stringbean resume RUN_ID"
 
 - Load the config snapshot and state
 - Identify the last completed stage
@@ -583,15 +583,15 @@ It must not launch agents.
 - Never repeat a completed write stage automatically unless required
 - Clearly tell the user what is being resumed
 
-"agent-relay status [RUN_ID]"
+"stringbean status [RUN_ID]"
 
 Show stage, selected agents, completed calls, errors, review round, and run location.
 
-"agent-relay logs RUN_ID"
+"stringbean logs RUN_ID"
 
 Print or open a readable summary of events and agent calls.
 
-"agent-relay agents"
+"stringbean agents"
 
 Show configured agents, executable status, role, model, and permissions.
 
@@ -674,7 +674,7 @@ Include this architecture diagram:
 User
   │
   ▼
-agent-relay CLI
+stringbean CLI
   │
   ├── workflow state machine
   ├── run persistence
@@ -691,9 +691,9 @@ Acceptance criteria
 The project is complete only when all of the following work:
 
 1. "pip install -e ."
-2. "agent-relay --help"
-3. "agent-relay init"
-4. "agent-relay doctor"
+2. "stringbean --help"
+3. "stringbean init"
+4. "stringbean doctor"
 5. A full fake-agent workflow can run from planning through review.
 6. A failed run can be resumed.
 7. Every agent call has persisted prompts, raw output, metadata, and parsed output.

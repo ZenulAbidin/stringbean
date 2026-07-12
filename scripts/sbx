@@ -243,6 +243,31 @@ if ! is_project_root "$ROOT_DIR"; then
   exit 1
 fi
 
+run_cli() {
+  local python_bin
+  python_bin="$(resolve_python)"
+  if [[ ! -x "$(command -v "$python_bin")" ]]; then
+    echo "Error: cannot execute $python_bin"
+    exit 1
+  fi
+
+  cd "$ROOT_DIR"
+  PYTHONPATH="$ROOT_DIR/src" "$python_bin" -c 'import sys; from agent_relay.cli import main; sys.argv = ["stringbean", *sys.argv[1:]]; raise SystemExit(main())' "$@"
+}
+
+ENTRYPOINT="${STRINGBEAN_ENTRYPOINT:-$(basename "$0")}"
+if [[ "$ENTRYPOINT" == "stringbean" ]]; then
+  if [[ $# -lt 1 ]]; then
+    run_cli --help
+    exit $?
+  fi
+  if [[ "${1-}" != "sbx" ]]; then
+    run_cli "$@"
+    exit $?
+  fi
+  shift
+fi
+
 if [[ $# -lt 1 ]]; then
   usage
   exit 1
@@ -293,13 +318,4 @@ if [[ -z "${TASK// }" ]]; then
   exit 1
 fi
 
-PYTHON_BIN="$(resolve_python)"
-if [[ ! -x "$(command -v "$PYTHON_BIN")" ]]; then
-  echo "Error: cannot execute $PYTHON_BIN"
-  exit 1
-fi
-
-
-cd "$ROOT_DIR"
-
-PYTHONPATH="$ROOT_DIR/src" "$PYTHON_BIN" -m agent_relay.cli run "$TASK" "$@"
+run_cli run "$TASK" "$@"

@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PROJECT_NAME = "stringbean"
 PROJECT_DIR_NAME = f".{PROJECT_NAME}"
-LEGACY_PROJECT_DIR_NAME = ".agent-relay"
 CONFIG_FILE_NAME = "config.yaml"
 RUN_DIR_NAME = "runs"
 
@@ -146,17 +145,14 @@ class Config(BaseModel):
 
 
 def active_project_dir(cwd: Optional[Path] = None) -> Path:
-    # Prefer a .stringbean/.agent-relay directory near the target path, then fallback
-    # to the current user's home directory as the default workspace.
+    # Prefer a .stringbean directory near the target path, then fallback to the
+    # current user's home directory as the default workspace.
     cwd = Path(cwd or ".").resolve()
     current = cwd
     while True:
         preferred = current / PROJECT_DIR_NAME
-        legacy = current / LEGACY_PROJECT_DIR_NAME
         if preferred.exists():
             return preferred
-        if legacy.exists() and not preferred.exists():
-            return legacy
         if current.parent == current:
             break
         current = current.parent

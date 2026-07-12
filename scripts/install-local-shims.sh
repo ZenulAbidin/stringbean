@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SHIM_DIR="${HOME}/.local/bin"
 ALT_SHIM_DIR="${HOME}/bin"
 REPO_ROOT="$ROOT_DIR"
+OLD_SHIM_NAME="agent""-relay"
 
 mkdir -p "$SHIM_DIR"
 if [[ ! -w "$SHIM_DIR" ]]; then
@@ -23,20 +24,17 @@ fi
 
 cat > "$SHIM_DIR/stringbean" <<EOF
 #!/usr/bin/env bash
-exec "$REPO_ROOT/scripts/sbx" "$@"
+exec "$REPO_ROOT/scripts/stringbean" "\$@"
 EOF
 
-cat > "$SHIM_DIR/agent-relay" <<EOF
-#!/usr/bin/env bash
-exec "$REPO_ROOT/scripts/sbx" run "$@"
-EOF
+rm -f "$SHIM_DIR/$OLD_SHIM_NAME"
 
 cat > "$SHIM_DIR/sbx" <<EOF
 #!/usr/bin/env bash
-exec "$REPO_ROOT/scripts/sbx" "$@"
+exec "$REPO_ROOT/scripts/sbx" "\$@"
 EOF
 
-chmod +x "$SHIM_DIR/stringbean" "$SHIM_DIR/agent-relay" "$SHIM_DIR/sbx"
+chmod +x "$SHIM_DIR/stringbean" "$SHIM_DIR/sbx"
 
-printf 'Installed shims to %s:\\n' "$SHIM_DIR"
-printf '  %s\\n' "$SHIM_DIR/stringbean" "$SHIM_DIR/agent-relay" "$SHIM_DIR/sbx"
+printf 'Installed shims to %s:\n' "$SHIM_DIR"
+printf '  %s\n' "$SHIM_DIR/stringbean" "$SHIM_DIR/sbx"

@@ -1,5 +1,4 @@
-.agent-relay-fake-state.json
-.agent-relay/runs/
+.stringbean-fake-state.json
 .pytest_cache/
 .stringbean/runs/
 __pycache__/

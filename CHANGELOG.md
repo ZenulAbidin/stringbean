@@ -29,7 +29,7 @@
 ### Changed
 
 - Python target set to support Python 3.10+ where dependencies are available.
-- Internal package name remains `stringbean` while exposing `agent-relay` entrypoint for compatibility.
+- User-facing invocation names are limited to `stringbean` and `sbx`.
 
 ### Fixed
 

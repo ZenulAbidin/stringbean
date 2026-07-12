@@ -18,7 +18,7 @@ import time
 
 
 def _status_file() -> pathlib.Path:
-    return pathlib.Path(".agent-relay-fake-state.json")
+    return pathlib.Path(".stringbean-fake-state.json")
 
 
 def _count(name: str) -> int:

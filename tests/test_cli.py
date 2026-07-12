@@ -13,7 +13,8 @@ runner = CliRunner()
 def test_cli_help_available():
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
-    assert "stringbean" in result.stdout or "agent-relay" in result.stdout
+    assert "stringbean" in result.stdout
+    assert "agent" + "-relay" not in result.stdout
 
 
 def test_run_help_lists_agent_stream_switch():
@@ -26,7 +27,7 @@ def test_init_and_status_cycle(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
     assert result.exit_code == 0
-    assert (tmp_path / ".stringbean" / "config.yaml").exists() or (tmp_path / ".agent-relay" / "config.yaml").exists()
+    assert (tmp_path / ".stringbean" / "config.yaml").exists()
 
     state = runner.invoke(cli.app, ["agents"])
     assert state.exit_code == 0
