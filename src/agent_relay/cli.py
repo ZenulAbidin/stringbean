@@ -670,6 +670,32 @@ def _apply_output_flags(cfg: Config, quiet: bool, no_agent_stream: bool) -> None
         cfg.output.stream_agent_output = False
 
 
+def _print_run_summary(summary: dict, *, dry_run: bool) -> None:
+    if dry_run:
+        console.print(summary)
+        console.print("Dry run mode - no agents were launched.")
+        return
+
+    status = summary.get("status", "UNKNOWN")
+    result = summary.get("result")
+    errors = summary.get("errors")
+    implemented = summary.get("implemented") or []
+    review_round = summary.get("review_round")
+    event_log = summary.get("event_log")
+
+    console.print(f"Status: {status}")
+    if result:
+        console.print(f"Result: {result}")
+    if errors:
+        console.print(f"Error: {errors}")
+    if implemented:
+        console.print(f"Tasks: {', '.join(str(item) for item in implemented)}")
+    if review_round is not None:
+        console.print(f"Review rounds: {review_round}")
+    if event_log:
+        console.print(f"Artifacts: {Path(str(event_log)).parent}")
+
+
 def _resolve_execution_profile(profile: str, ro: bool, rw: bool) -> str:
     if ro and rw:
         raise typer.BadParameter("Use only one of --ro or --rw")
@@ -770,9 +796,7 @@ def run(
         _print_run_failure(selected_run_id, task, exc)
         raise typer.Exit(code=1) from exc
     console.print(f"Run ID: {out['run_id']}")
-    console.print(out["summary"])
-    if dry_run:
-        console.print("Dry run mode - no agents were launched.")
+    _print_run_summary(out["summary"], dry_run=dry_run)
 
 
 @app.command()
@@ -843,7 +867,8 @@ def resume(
     except RuntimeError as exc:
         _print_run_failure(run_id, state.state.task, exc)
         raise typer.Exit(code=1) from exc
-    console.print(f"Resumed run complete status: {result}")
+    console.print(f"Run ID: {run_id}")
+    _print_run_summary(result, dry_run=False)
 
 
 @app.command()

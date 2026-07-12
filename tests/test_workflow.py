@@ -78,6 +78,7 @@ def test_fake_run_plans_and_reviews(tmp_path: Path):
     result = asyncio.run(engine.run("Build feature"))
 
     assert result["status"] == "COMPLETED"
+    assert result["result"] == "done #1"
     assert (run_dir.path / "plan.json").exists()
     assert result["review_round"] == 1
     assert (run_dir.path / "state.json").exists()
@@ -167,6 +168,73 @@ def test_agent_stream_formats_json_events(tmp_path: Path, capsys):
 
     captured = capsys.readouterr()
     assert captured.out == "assistant: hello\nassistant: world\n"
+
+
+def test_agent_stream_suppresses_prompt_echo(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-prompt", "Prompt echo", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    engine._stream_agent_chunk("Reading prompt from stdin...\nuser\nSECRET PROMPT\ncodex\nFinal answer\n")
+
+    captured = capsys.readouterr()
+    assert "SECRET PROMPT" not in captured.out
+    assert captured.out == "Final answer\n"
+
+
+def test_agent_stream_collapses_pretty_structured_json(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-pretty-json", "Pretty JSON", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    engine._stream_agent_chunk(
+        '{\n'
+        '  "summary": "Use README.md as the answer.",\n'
+        '  "tasks": [\n'
+        '    {"title": "Confirm README"},\n'
+        '    {"title": "Report result"}\n'
+        '  ],\n'
+        '  "risks": []\n'
+        '}\n'
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == "plan: Use README.md as the answer.\n  - Confirm README\n  - Report result\n"
+
+
+def test_agent_stream_hides_tool_output_body_and_tokens(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-tool-output", "Tool output", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    engine._stream_agent_chunk(
+        '/usr/bin/zsh -lc "sed -n 1,80p README.md" in /repo\n'
+        "succeeded in 12ms:\n"
+        "HUGE README BODY SHOULD NOT PRINT\n"
+        "codex\n"
+        "tokens used\n"
+        "1,234\n"
+        '{"status":"completed","summary":"README.md exists."}\n'
+        '{"status":"completed","summary":"README.md exists."}\n'
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == (
+        'tool: /usr/bin/zsh -lc "sed -n 1,80p README.md"\n'
+        "tool output: succeeded in 12ms\n"
+        "result: completed — README.md exists.\n"
+    )
+    assert "HUGE README BODY" not in captured.out
+    assert "1,234" not in captured.out
 
 
 def test_advisor_revision_leads_to_revised_plan(tmp_path: Path):

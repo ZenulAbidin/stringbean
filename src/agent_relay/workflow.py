@@ -163,6 +163,8 @@ class WorkflowEngine:
         self.config_snapshot_written = False
         self._agent_stream_open_line = False
         self._agent_stream_formatter: Optional[LiveStreamFormatter] = None
+        self._latest_response_summary: Optional[str] = None
+        self._latest_implementation_summary: Optional[str] = None
         self.policy_bin_dir = install_command_policy_wrappers(self.run_dir.path)
 
         if self.run_dir.task_path.exists():
@@ -194,6 +196,17 @@ class WorkflowEngine:
         if self.quiet or not chunk:
             return
         self._ensure_agent_stream_formatter().feed(chunk)
+
+    def _remember_agent_response(self, role: str, payload: Optional[Dict[str, object]]) -> None:
+        if not payload:
+            return
+        summary = payload.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            return
+        summary = summary.strip()
+        self._latest_response_summary = summary
+        if role in {"implementer", "fixer"}:
+            self._latest_implementation_summary = summary
 
     def _mark(self, status: RunStatus, event: str, payload: Optional[Dict[str, object]] = None) -> None:
         self.state.state.mark(status, datetime.now(timezone.utc))
@@ -485,6 +498,8 @@ class WorkflowEngine:
                 "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
             }
         )
+        if model_payload and parse_error is None:
+            self._remember_agent_response(role, model_payload)
 
         self.state.state.call_count += 1
         idx = self._run_dir_index()
@@ -753,6 +768,7 @@ class WorkflowEngine:
 
         summary = {
             "status": status.value,
+            "result": self._latest_implementation_summary or self._latest_response_summary,
             "implemented": self.state.state.implemented_task_ids,
             "review_round": self.state.state.review_round,
             "run_id": self.state.state.run_id,
