@@ -627,8 +627,34 @@ def test_codex_progress_prints_sanitized_stage_updates(tmp_path: Path, capsys):
     assert "Progress: Advisor verdict" in captured.out
     assert "Progress: Implementation result" in captured.out
     assert "Progress: Review verdict" in captured.out
+    assert "STRINGBEAN_INTERMEDIATE: Agent output: stderr status from planner" in captured.out
     assert "stream output start" not in captured.out
-    assert "stderr status from planner" not in captured.out
+
+
+def test_codex_progress_streams_sanitized_agent_output_and_suppresses_reasoning(
+    tmp_path: Path, capsys
+):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-codex-agent-output", "Stream output", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, quiet=True, codex_progress=True)
+    engine._agent_output_redaction_values = ["secret-value"]
+
+    engine._stream_agent_chunk('{"type":"agent_message","message":"working with secret-value"}\n')
+    engine._stream_agent_chunk('{"type":"reasoning","message":"hidden scratch secret-value"}\n')
+    engine._stream_agent_chunk("reasoning: hidden plain scratch\n")
+    engine._flush_agent_stream()
+
+    captured = capsys.readouterr()
+    assert (
+        "STRINGBEAN_INTERMEDIATE: Agent output: assistant: working with REDACTED"
+        in captured.out
+    )
+    assert "secret-value" not in captured.out
+    assert "hidden scratch" not in captured.out
+    assert "hidden plain scratch" not in captured.out
 
 
 def test_agent_stream_preserves_partial_chunks(tmp_path: Path, capsys):

@@ -811,7 +811,10 @@ def run(
     codex_progress: bool = typer.Option(
         True,
         "--codex-progress/--no-codex-progress",
-        help="Show compact phase progress while --codex-final runs. Raw provider output remains hidden.",
+        help=(
+            "Show compact phase progress and sanitized agent output while --codex-final runs. "
+            "Raw provider transcripts and hidden reasoning remain hidden."
+        ),
     ),
     codex_progress_interval: float = typer.Option(
         30.0,

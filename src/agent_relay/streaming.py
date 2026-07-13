@@ -212,6 +212,9 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
 
 
 def _format_json_event(event: dict[str, Any]) -> Iterable[str]:
+    if _is_reasoning_event(event):
+        return
+
     structured = _format_structured_payload(event)
     if structured is not None:
         yield from structured
@@ -342,6 +345,21 @@ def _event_label(event_type: str) -> str:
     return labels.get(normalized, event_type)
 
 
+def _is_reasoning_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("type") or event.get("event") or "").strip()
+    normalized = event_type.replace("-", "_").replace(".", "_").lower()
+    if (
+        "reasoning" in normalized
+        or "chain_of_thought" in normalized
+        or "scratchpad" in normalized
+    ):
+        return True
+    if event_type:
+        return False
+    reasoning_keys = {"reasoning", "chain_of_thought", "scratchpad", "scratch_thoughts"}
+    return any(key in event for key in reasoning_keys)
+
+
 def _extract_event_text(value: Any) -> str | None:
     if isinstance(value, str):
         return value
@@ -435,7 +453,13 @@ def _starts_prompt_echo(stripped: str) -> bool:
 def _should_suppress_noise(stripped: str) -> bool:
     if not stripped:
         return True
-    if stripped in {"codex", "assistant", "exec", "--------", "tokens used"}:
+    if stripped in {
+        "codex",
+        "assistant",
+        "exec",
+        "--------",
+        "tokens used",
+    }:
         return True
     prefixes = (
         "Reading prompt from stdin",

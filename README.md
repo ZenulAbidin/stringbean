@@ -130,7 +130,7 @@ stringbean run --dry-run "Implement auth checks"
   - `--no-advisor`
   - `--dry-run`
   - `--no-agent-stream` / `--no-agent-output` hides the live provider stdout/stderr stream. By default Stringbean shows selective formatted provider output: prompt echoes and CLI boilerplate are suppressed, visible escapes such as `\n` are decoded, structured JSON answers are collapsed into readable result lines, tool output bodies are capped at three visible lines, terminal output uses TTY-aware bold/white labels, and raw stdout/stderr are still retained in run artifacts.
-  - `--codex-final` emits intermediate status lines prefixed with `STRINGBEAN_INTERMEDIATE:` and a final block wrapped in `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END`. The final block still contains the compatibility `STRINGBEAN_RESULT_START` / `STRINGBEAN_RESULT_END` result block for Codex custom prompts to mirror into the visible final answer.
+  - `--codex-final` emits intermediate status and sanitized agent-output lines prefixed with `STRINGBEAN_INTERMEDIATE:` and a final block wrapped in `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END`. The final block still contains the compatibility `STRINGBEAN_RESULT_START` / `STRINGBEAN_RESULT_END` result block for Codex custom prompts to mirror into the visible final answer.
   - `--quiet`
   - `--run-id`
 - `stringbean resume RUN_ID`
@@ -181,7 +181,7 @@ If `sbx` is still being resolved to an old global script, this hook also defines
 
 ### Codex plugin wrapper
 
-For use inside Codex, prefer the local Stringbean plugin. It installs a `stringbean:sbx` skill that tells Codex to run `sbx --codex-final`, surface `STRINGBEAN_INTERMEDIATE:` progress lines during long runs, and mirror the `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END` result into the visible final answer.
+For use inside Codex, prefer the local Stringbean plugin. It installs a `stringbean:sbx` skill that tells Codex to run `sbx --codex-final`, surface `STRINGBEAN_INTERMEDIATE:` progress and sanitized agent-output lines during long runs, and mirror the `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END` result into the visible final answer.
 
 Install or refresh it with:
 
@@ -198,13 +198,13 @@ $sbx fix typo in README --mode high
 
 If Codex displays the plugin-qualified skill name, choose `stringbean:sbx`.
 
-`--codex-final` keeps raw provider output hidden, but explicitly marked intermediate progress is on by default. Use `--no-codex-progress` for a silent run, or `--codex-progress-interval 10` to make long-running heartbeat lines more frequent.
+`--codex-final` keeps raw provider transcripts and hidden reasoning hidden, but explicitly marked intermediate progress and sanitized agent-output lines are on by default. Use `--no-codex-progress` for a silent run, or `--codex-progress-interval 10` to make long-running heartbeat lines more frequent.
 
 Codex plugins are installed from this repo's local marketplace at `.agents/plugins/marketplace.json`.
 
 ### Codex custom prompt wrapper
 
-Codex collapses shell-command output into the transcript panel, so Stringbean includes a custom prompt wrapper that tells Codex to run `sbx --codex-final`, summarize only `STRINGBEAN_INTERMEDIATE:` lines while it runs, and copy the `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END` result into the visible final answer.
+Codex collapses shell-command output into the transcript panel, so Stringbean includes a custom prompt wrapper that tells Codex to run `sbx --codex-final`, summarize only `STRINGBEAN_INTERMEDIATE:` progress and agent-output lines while it runs, and copy the `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END` result into the visible final answer.
 
 Custom prompts are a legacy slash-command fallback. Use the plugin skill above when available.
 

@@ -234,7 +234,12 @@ class WorkflowEngine:
 
     def _ensure_agent_stream_formatter(self) -> LiveStreamFormatter:
         if self._agent_stream_formatter is None:
-            self._agent_stream_formatter = LiveStreamFormatter(self._write_agent_stream_line)
+            write_line = (
+                self._write_codex_agent_stream_line
+                if self.quiet and self.codex_progress
+                else self._write_agent_stream_line
+            )
+            self._agent_stream_formatter = LiveStreamFormatter(write_line)
         return self._agent_stream_formatter
 
     def _flush_agent_stream(self) -> None:
@@ -242,9 +247,38 @@ class WorkflowEngine:
             self._agent_stream_formatter.flush()
 
     def _stream_agent_chunk(self, chunk: str) -> None:
-        if self.quiet or not chunk:
+        if not chunk:
+            return
+        if self.quiet and not self.codex_progress:
             return
         self._ensure_agent_stream_formatter().feed(chunk)
+
+    def _write_codex_agent_stream_line(self, line: str) -> None:
+        if self._agent_output_redaction_values:
+            line = redact_environment_text(line, self._agent_output_redaction_values)
+        line = self._shorten_text(line, limit=420)
+        if not line or line == "stream output start" or self._is_reasoning_stream_line(line):
+            return
+        if self._agent_stream_open_line:
+            print("", flush=True)
+            self._agent_stream_open_line = False
+        print(f"STRINGBEAN_INTERMEDIATE: Agent output: {line}", flush=True)
+        self._agent_stream_open_line = False
+
+    @staticmethod
+    def _is_reasoning_stream_line(line: str) -> bool:
+        normalized = line.lstrip().lower().replace("-", "_").replace(".", "_")
+        return normalized.startswith(
+            (
+                "reasoning:",
+                "reasoning_summary:",
+                "reasoning summary:",
+                "chain_of_thought:",
+                "scratchpad:",
+                "scratch_thoughts:",
+                "scratch thoughts:",
+            )
+        )
 
     def _progress(self, message: str) -> None:
         if not self.codex_progress:
@@ -1045,12 +1079,16 @@ class WorkflowEngine:
             self.state.write()
 
         stream_agent_output = bool(self.config.output.stream_agent_output and not self.quiet)
+        codex_agent_output = bool(self.codex_progress and not stream_agent_output)
         if stream_agent_output:
             self._agent_stream_formatter = LiveStreamFormatter(self._write_agent_stream_line)
             self._log(f"[stringbean] starting {role} agent: {agent_name}")
+        elif codex_agent_output:
+            self._agent_stream_formatter = LiveStreamFormatter(self._write_codex_agent_stream_line)
         if self.codex_progress:
             self._progress_agent_start(role, agent_name, agent)
-        callback = self._stream_agent_chunk if stream_agent_output else None
+        should_stream_agent_output = stream_agent_output or codex_agent_output
+        callback = self._stream_agent_chunk if should_stream_agent_output else None
         progress_callback = (
             (lambda elapsed: self._progress_agent_wait(role, agent_name, elapsed))
             if self.codex_progress
@@ -1073,7 +1111,7 @@ class WorkflowEngine:
                 )
             )
         except TimeoutError as exc:
-            if stream_agent_output:
+            if should_stream_agent_output:
                 self._flush_agent_stream()
                 self._agent_stream_formatter = None
             if self.codex_progress:
@@ -1081,7 +1119,7 @@ class WorkflowEngine:
             record_execution_failure(f"agent {agent_name} timed out", str(exc))
             raise RuntimeError(f"agent {agent_name} timed out") from exc
         except Exception as exc:
-            if stream_agent_output:
+            if should_stream_agent_output:
                 self._flush_agent_stream()
                 self._agent_stream_formatter = None
             if self.codex_progress:
@@ -1092,9 +1130,11 @@ class WorkflowEngine:
             if prompt_file is not None:
                 prompt_file.unlink(missing_ok=True)
             self._agent_output_redaction_values = previous_redaction_values
-        if stream_agent_output:
+        if should_stream_agent_output:
             self._flush_agent_stream()
+        if stream_agent_output:
             self._log(f"[stringbean] finished {role} agent: {agent_name} (exit {result.exit_code})")
+        if should_stream_agent_output:
             self._agent_stream_formatter = None
         if self.codex_progress:
             self._progress_agent_finish(role, agent_name, result.exit_code, result.duration_seconds)

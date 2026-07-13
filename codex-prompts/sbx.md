@@ -10,9 +10,9 @@ sbx $ARGUMENTS --codex-final
 ```
 
 While the command is running, use only lines beginning with `STRINGBEAN_INTERMEDIATE:` for
-brief user-facing status updates. These lines are intermediate status, not final output. Prefer
-those concrete lines over generic “still working” messages. Do not expose hidden chain-of-thought,
-raw prompts, file dumps, JSON blobs, or full provider logs.
+brief user-facing status updates. These lines are intermediate status or sanitized agent output,
+not final output. Prefer those concrete lines over generic “still working” messages. Do not expose
+hidden chain-of-thought, raw prompts, file dumps, JSON blobs, or full provider logs.
 
 After the command completes, find the final block between `STRINGBEAN_FINAL_START` and
 `STRINGBEAN_FINAL_END`. Inside that block, read the text between `STRINGBEAN_RESULT_START` and
