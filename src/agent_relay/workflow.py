@@ -17,6 +17,7 @@ from rich.text import Text
 from .connectors import Adapter, AdapterCapabilities, ClaudeConnector, CodexConnector, GenericConnector, GrokConnector
 from .config import AgentConfig, Config
 from .context import collect_repo_context
+from .exclusions import RepositoryExclusions, is_control_metadata_path
 from .models import (
     AdvisorResponse,
     AgentCallResult,
@@ -209,6 +210,8 @@ class WorkflowEngine:
         self._agent_output_redaction_values: list[str] = []
         self._latest_response_summary: Optional[str] = None
         self._latest_implementation_summary: Optional[str] = None
+        self._exclusions_cache_key: tuple[Path, tuple[str, ...], bool] | None = None
+        self._exclusions_cache: RepositoryExclusions | None = None
         self.policy_bin_dir = install_command_policy_wrappers(self.run_dir.path)
 
         if self.run_dir.task_path.exists():
@@ -512,6 +515,25 @@ class WorkflowEngine:
     def _should_track_repo_diff(self, agent: AgentConfig) -> bool:
         return self.execution_profile == "ro" or agent.permissions == "read_only"
 
+    def _repository_exclusions(self) -> RepositoryExclusions:
+        root = self.repo_root.resolve()
+        configured = tuple(self.config.repository.excluded_paths)
+        exclude_nested = bool(self.config.repository.exclude_nested_repositories)
+        cache_key = (root, configured, exclude_nested)
+        if self._exclusions_cache_key != cache_key or self._exclusions_cache is None:
+            self._exclusions_cache = RepositoryExclusions.discover(
+                root,
+                configured,
+                exclude_nested_repositories=exclude_nested,
+            )
+            self._exclusions_cache_key = cache_key
+        return self._exclusions_cache
+
+    def _is_excluded_status_path(self, path: str) -> bool:
+        old_path, new_path = self._split_status_path(path)
+        exclusions = self._repository_exclusions()
+        return exclusions.is_excluded(old_path) or bool(new_path and exclusions.is_excluded(new_path))
+
     def _policy_violation_message(self, agent_name: str, changed_files: List[str]) -> str:
         prefix = "read-only profile policy violation" if self.execution_profile == "ro" else "read-only role policy violation"
         return f"{prefix} in {agent_name}: forbidden changes {', '.join(changed_files)}"
@@ -651,7 +673,7 @@ class WorkflowEngine:
     def _repo_status_snapshot(self) -> Dict[str, str]:
         try:
             proc = subprocess.run(
-                [git_command(), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                [git_command(), "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
                 cwd=self.repo_root,
                 check=False,
                 capture_output=True,
@@ -661,7 +683,11 @@ class WorkflowEngine:
         except FileNotFoundError:
             return self._non_git_status_snapshot()
         if proc.returncode == 0:
-            entries = self._repo_status_entries(proc.stdout)
+            entries = {
+                path: status
+                for path, status in self._repo_status_entries(proc.stdout).items()
+                if not self._is_excluded_status_path(path)
+            }
             for path, status in self._git_ignored_status_snapshot().items():
                 entries.setdefault(path, status)
             return entries
@@ -670,7 +696,7 @@ class WorkflowEngine:
     def _git_ignored_status_snapshot(self) -> Dict[str, str]:
         try:
             proc = subprocess.run(
-                [git_command(), "ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+                [git_command(), "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", "."],
                 cwd=self.repo_root,
                 check=False,
                 capture_output=True,
@@ -686,7 +712,7 @@ class WorkflowEngine:
             if not raw:
                 continue
             path = raw.decode("utf-8", errors="surrogateescape")
-            if self._is_internal_run_path(self.repo_root / path):
+            if self._is_internal_run_path(self.repo_root / path) or self._repository_exclusions().is_excluded(path):
                 continue
             path_parts = Path(path).parts
             for idx in range(1, len(path_parts)):
@@ -717,12 +743,16 @@ class WorkflowEngine:
             kept_dirs = []
             for dir_name in dir_names:
                 dir_path = root_path / dir_name
-                if dir_name == ".git" or self._is_internal_run_path(dir_path):
+                rel_dir = dir_path.relative_to(self.repo_root).as_posix()
+                if (
+                    is_control_metadata_path(rel_dir)
+                    or self._is_internal_run_path(dir_path)
+                    or self._repository_exclusions().is_excluded(rel_dir)
+                ):
                     continue
                 if seen_entries >= _NON_GIT_MAX_WALK_ENTRIES:
                     continue
                 kept_dirs.append(dir_name)
-                rel_dir = dir_path.relative_to(self.repo_root).as_posix()
                 entries[rel_dir] = f"{_NON_GIT_STATUS_PREFIX}dir"
                 seen_entries += 1
             dir_names[:] = kept_dirs
@@ -734,6 +764,8 @@ class WorkflowEngine:
                 if self._is_internal_run_path(file_path):
                     continue
                 rel_file = file_path.relative_to(self.repo_root).as_posix()
+                if self._repository_exclusions().is_excluded(rel_file):
+                    continue
                 try:
                     entries[rel_file] = self._non_git_status_for_path(rel_file)
                     seen_entries += 1
@@ -761,6 +793,13 @@ class WorkflowEngine:
             mode = os.stat(full_path, follow_symlinks=False).st_mode & 0o7777
         except OSError:
             mode = None
+        if self._repository_exclusions().is_excluded(path):
+            try:
+                stat_result = os.stat(full_path, follow_symlinks=False)
+                metadata = f"{stat_result.st_size}:{stat_result.st_mtime_ns}".encode("ascii")
+            except OSError:
+                metadata = b""
+            return ("excluded", metadata, mode)
         if full_path.is_symlink():
             try:
                 return ("symlink", os.readlink(full_path).encode("utf-8", errors="surrogateescape"), mode)
@@ -782,7 +821,7 @@ class WorkflowEngine:
     def _git_tracked_paths(self) -> List[str]:
         try:
             proc = subprocess.run(
-                [git_command(), "ls-files", "-z"],
+                [git_command(), "ls-files", "-z", "--", "."],
                 cwd=self.repo_root,
                 check=False,
                 capture_output=True,
@@ -796,7 +835,9 @@ class WorkflowEngine:
         return [
             raw.decode("utf-8", errors="surrogateescape")
             for raw in proc.stdout.split(b"\0")
-            if raw
+            if raw and not self._repository_exclusions().is_excluded(
+                raw.decode("utf-8", errors="surrogateescape")
+            )
         ]
 
     def _is_git_worktree(self) -> bool:
@@ -827,16 +868,22 @@ class WorkflowEngine:
             kept_dirs = []
             for dir_name in dir_names:
                 dir_path = root_path / dir_name
-                if dir_name == ".git" or self._is_internal_run_path(dir_path):
+                rel_dir = dir_path.relative_to(self.repo_root).as_posix()
+                if (
+                    is_control_metadata_path(rel_dir)
+                    or self._is_internal_run_path(dir_path)
+                    or self._repository_exclusions().is_excluded(rel_dir)
+                ):
                     continue
                 kept_dirs.append(dir_name)
-                rel_dir = dir_path.relative_to(self.repo_root).as_posix()
                 snapshot[rel_dir] = self._path_content_state(rel_dir)
             dir_names[:] = kept_dirs
         for tracked_path in self._git_tracked_paths():
             snapshot[tracked_path] = self._path_content_state(tracked_path)
         for status_path in status_entries:
             old_path, new_path = self._split_status_path(status_path)
+            if self._is_excluded_status_path(status_path):
+                continue
             snapshot[old_path] = self._path_content_state(old_path)
             if new_path:
                 snapshot[new_path] = self._path_content_state(new_path)
@@ -926,8 +973,12 @@ class WorkflowEngine:
         out["STRINGBEAN_DENIED_GIT_SUBCOMMANDS"] = ",".join(DENIED_GIT_SUBCOMMANDS)
         preload_path = self.policy_bin_dir / POLICY_PRELOAD_NAME
         out["STRINGBEAN_POLICY_BIN"] = str(self.policy_bin_dir)
+        out["STRINGBEAN_POLICY_ALLOWED_PATHS"] = str(self.policy_bin_dir.resolve())
         out["STRINGBEAN_POLICY_WRAPPERS_ACTIVE"] = "1"
         out["STRINGBEAN_POLICY_PRELOAD_ACTIVE"] = "1" if preload_path.is_file() else "0"
+        protected_paths = self._repository_exclusions().encoded_protected_paths()
+        if protected_paths:
+            out["STRINGBEAN_POLICY_EXCLUDED_PATHS"] = protected_paths
         if preload_path.is_file():
             existing_preload = out.get("LD_PRELOAD") or os.environ.get("LD_PRELOAD", "")
             out["LD_PRELOAD"] = f"{preload_path} {existing_preload}".strip()
@@ -1168,7 +1219,13 @@ class WorkflowEngine:
             baseline_contents = self._repo_baseline_content_snapshot(baseline)
 
         agent_prompt = prompt
-        execution_prompt = policy_prompt(self.execution_profile, self._effective_permission(agent)) + "\n\n" + agent_prompt
+        exclusions = self._repository_exclusions()
+        execution_prompt = policy_prompt(
+            self.execution_profile,
+            self._effective_permission(agent),
+            workspace_root=self.repo_root,
+            excluded_paths=exclusions.prompt_patterns(),
+        ) + "\n\n" + agent_prompt
 
         cfg_prompt = None
         prompt_file: Optional[Path] = None
@@ -1207,6 +1264,14 @@ class WorkflowEngine:
             "policy_wrappers_active": self.policy_bin_dir.is_dir(),
             "policy_preload_path": str(self.policy_bin_dir / POLICY_PRELOAD_NAME),
             "policy_preload_active": (self.policy_bin_dir / POLICY_PRELOAD_NAME).is_file(),
+            "excluded_path_patterns": list(exclusions.prompt_patterns()),
+            "excluded_nested_repositories": list(exclusions.nested_repository_roots),
+            "excluded_path_enforcement_active": bool(
+                exclusions.protected_paths and (self.policy_bin_dir / POLICY_PRELOAD_NAME).is_file()
+            ),
+            "wall_clock_timeout_seconds": agent.timeout_seconds,
+            "idle_timeout_seconds": agent.idle_timeout_seconds,
+            "max_repeated_output_lines": agent.max_repeated_output_lines,
             "policy_retry_attempt": policy_retry_attempt,
             "policy_retry_limit": self.config.workflow.max_policy_violation_retries,
         }
@@ -1251,9 +1316,11 @@ class WorkflowEngine:
             self._agent_stream_formatter = LiveStreamFormatter(self._write_codex_agent_stream_line)
         if self.codex_progress:
             self._progress_agent_start(role, agent_name, agent)
+            wall_clock = f"{agent.timeout_seconds:g}s" if agent.timeout_seconds > 0 else "disabled"
             self._progress(
                 f"Command: launching {Path(command[0]).name} for {role} {agent_name} "
-                f"(timeout={agent.timeout_seconds}s, heartbeat={self.progress_interval_seconds:g}s)."
+                f"(wall-clock={wall_clock}, idle-watchdog={agent.idle_timeout_seconds:g}s, "
+                f"heartbeat={self.progress_interval_seconds:g}s)."
             )
         should_stream_agent_output = stream_agent_output or codex_agent_output
         callback = self._stream_agent_chunk if should_stream_agent_output else None
@@ -1276,6 +1343,8 @@ class WorkflowEngine:
                     working_directory=self.repo_root / agent.working_directory,
                     env=env,
                     timeout_seconds=agent.timeout_seconds,
+                    idle_timeout_seconds=agent.idle_timeout_seconds,
+                    max_repeated_output_lines=agent.max_repeated_output_lines,
                     prompt=cfg_prompt,
                     on_stdout_line=callback,
                     on_stderr_line=callback,
@@ -1288,9 +1357,11 @@ class WorkflowEngine:
                 self._flush_agent_stream()
                 self._agent_stream_formatter = None
             if self.codex_progress:
-                self._progress(f"Agent: {role} {agent_name} timed out.")
-            record_execution_failure(f"agent {agent_name} timed out", str(exc))
-            raise RuntimeError(f"agent {agent_name} timed out") from exc
+                self._progress(
+                    f"Agent: {role} {agent_name} stopped by watchdog — {self._shorten_text(exc)}."
+                )
+            record_execution_failure(f"agent {agent_name} stopped by watchdog: {exc}", str(exc))
+            raise RuntimeError(f"agent {agent_name} stopped by watchdog: {exc}") from exc
         except Exception as exc:
             if should_stream_agent_output:
                 self._flush_agent_stream()
@@ -1354,6 +1425,7 @@ class WorkflowEngine:
 
         changed_paths: List[str] | None = None
         denied_paths: List[str] = []
+        denied_path_keys: List[str] = []
         if track_repo_diff and baseline is not None:
             after = self._repo_status_snapshot()
             after_contents = self._repo_content_snapshot_for_paths(baseline_contents)
@@ -1382,6 +1454,9 @@ class WorkflowEngine:
                     self._rollback_read_only_changes(changed_path_keys, baseline, after, baseline_contents)
                     parse_error = self._policy_violation_message(agent_name, denied_paths)
                     call_result.parse_error = parse_error
+        excluded_policy_violation = any(self._is_excluded_status_path(path) for path in denied_path_keys)
+        if excluded_policy_violation:
+            call_result.metadata["excluded_path_policy_violation"] = True
         call_result.metadata.update(policy_metadata)
         if stored_payload and parse_error is None:
             self._remember_agent_response(role, stored_payload)
@@ -1392,7 +1467,16 @@ class WorkflowEngine:
         self.state.write()
 
         retry_limit = max(0, int(self.config.workflow.max_policy_violation_retries))
-        if denied_paths and not self.ignore_sandbox_warnings and policy_retry_attempt < retry_limit:
+        if denied_paths and excluded_policy_violation and not self.ignore_sandbox_warnings:
+            self._progress(
+                "Progress: Excluded-path policy violation detected; access is not being retried."
+            )
+        if (
+            denied_paths
+            and not excluded_policy_violation
+            and not self.ignore_sandbox_warnings
+            and policy_retry_attempt < retry_limit
+        ):
             next_attempt = policy_retry_attempt + 1
             self._mark(
                 stage,
@@ -1506,6 +1590,8 @@ class WorkflowEngine:
             return
         if kind == "file-large":
             return
+        if kind == "excluded":
+            return
         if os.path.lexists(full_path) and full_path.is_dir() and not full_path.is_symlink():
             shutil.rmtree(full_path, ignore_errors=True)
         elif os.path.lexists(full_path) and (full_path.is_symlink() or not full_path.is_file()):
@@ -1565,7 +1651,10 @@ class WorkflowEngine:
             self.repo_root,
             {
                 "TASK": task,
-                "CONTEXT": json.dumps(collect_repo_context(self.repo_root), indent=2),
+                "CONTEXT": json.dumps(
+                    collect_repo_context(self.repo_root, self._repository_exclusions()),
+                    indent=2,
+                ),
                 "REPO_ROOT": str(self.repo_root),
             },
         )
@@ -1966,6 +2055,7 @@ class WorkflowEngine:
                 "permissions": dry_run_permissions,
                 "denied_commands": list(DENIED_COMMANDS),
                 "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
+                "workspace_root": str(self.repo_root),
                 "state_dir": str(self.run_dir.path),
                 "plan_exists": plan_exists,
                 "repo_status": dirty_status,

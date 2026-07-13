@@ -13,7 +13,9 @@ agents:
     permissions: read_only
     prompt_transport: stdin
     role: advisor
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   claude-opus-4-8:
     adapter: claude
@@ -29,7 +31,9 @@ agents:
     permissions: read_only
     prompt_transport: stdin
     role: reviewer
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   claude-sonnet-5:
     adapter: claude
@@ -45,7 +49,9 @@ agents:
     permissions: read_only
     prompt_transport: stdin
     role: reviewer
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   gpt55-high:
     adapter: codex
@@ -64,7 +70,9 @@ agents:
     permissions: read_write
     prompt_transport: stdin
     role: implementer
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   gpt55-low:
     adapter: codex
@@ -83,7 +91,9 @@ agents:
     permissions: read_only
     prompt_transport: stdin
     role: advisor
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   gpt55-low-rw:
     adapter: codex
@@ -102,7 +112,9 @@ agents:
     permissions: read_write
     prompt_transport: stdin
     role: implementer
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   gpt55-medium:
     adapter: codex
@@ -121,7 +133,9 @@ agents:
     permissions: read_only
     prompt_transport: stdin
     role: advisor
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   gpt55-medium-rw:
     adapter: codex
@@ -140,7 +154,9 @@ agents:
     permissions: read_write
     prompt_transport: stdin
     role: implementer
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   gpt56-high:
     adapter: codex
@@ -159,7 +175,9 @@ agents:
     permissions: read_write
     prompt_transport: stdin
     role: orchestrator
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   gpt56-low:
     adapter: codex
@@ -178,7 +196,9 @@ agents:
     permissions: read_only
     prompt_transport: stdin
     role: reviewer
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   gpt56-medium:
     adapter: codex
@@ -197,7 +217,9 @@ agents:
     permissions: read_only
     prompt_transport: stdin
     role: advisor
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   grok-build:
     adapter: grok
@@ -215,7 +237,9 @@ agents:
     permissions: read_write
     prompt_transport: argv
     role: implementer
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
   grok-review:
     adapter: grok
@@ -233,7 +257,9 @@ agents:
     permissions: read_only
     prompt_transport: argv
     role: reviewer
-    timeout_seconds: 1200
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
     working_directory: .
 output:
   redact_environment_values: true
@@ -241,8 +267,10 @@ output:
   stream_agent_output: true
 repository:
   create_checkpoint_commits: false
+  exclude_nested_repositories: true
+  excluded_paths: []
   require_clean_start: false
-  require_git: true
+  require_git: false
 version: 1
 workflow:
   advisor_policy: before_implementation

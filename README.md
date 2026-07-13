@@ -49,7 +49,7 @@ stringbean CLI
 
 - Python 3.10+ (Python 3.12+ recommended)
 - Local install of desired provider CLIs (optional)
-- Optional git availability for best safety checks
+- Optional Git availability for enhanced status/diff checks; ordinary directories are first-class workspaces
 
 ## Install
 
@@ -135,7 +135,7 @@ stringbean run --dry-run "Implement auth checks"
     - Codex agents are launched with explicit approval/sandbox flags instead of inherited defaults: `ro` uses workspace-write with Stringbean diff enforcement; `rw` uses danger-full-access at the provider layer while Stringbean still diff-checks read-only roles.
     - Subagents receive a Stringbean denylist for destructive commands such as `rm`, `sudo`, `dd`, `mkfs`, `shutdown`, and destructive git operations such as `git reset`, `git clean`, and `git push`.
   - `--policy-retries N`
-    - Retries an agent call after filesystem policy violations by reframing the role prompt as analysis-only and naming the forbidden paths. Default: `workflow.max_policy_violation_retries` (`2`).
+    - Retries an agent call after ordinary filesystem policy violations by reframing the role prompt as analysis-only and naming the forbidden paths. Excluded/sensitive-path access is never retried. Default: `workflow.max_policy_violation_retries` (`2`).
   - `--max-review-rounds N`
   - `--no-advisor`
   - `--dry-run`
@@ -308,7 +308,9 @@ agents:
     permissions: read_write
     command: null
     prompt_transport: stdin
-    timeout_seconds: 1800
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
 
   fable:
     adapter: claude
@@ -317,7 +319,9 @@ agents:
     permissions: read_only
     command: null
     prompt_transport: stdin
-    timeout_seconds: 900
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
 
   grok:
     adapter: grok
@@ -346,8 +350,12 @@ workflow:
   max_policy_violation_retries: 2
 
 repository:
-  require_git: true
+  require_git: false
   require_clean_start: false
+  exclude_nested_repositories: true
+  excluded_paths:
+    - private-production/**
+    - auth-material/**
 
 output:
   stream_agent_output: true
@@ -358,8 +366,12 @@ output:
 ### Required agent fields
 
 `name`, `adapter`, `model`, `role`, `permissions`, `command`, `prompt_transport`,
-`environment_overrides`, `timeout_seconds`, `working_directory`, and optional
-`fallback_agent`.
+`environment_overrides`, `timeout_seconds`, `idle_timeout_seconds`,
+`max_repeated_output_lines`, `working_directory`, and optional `fallback_agent`.
+
+`timeout_seconds: 0` disables the blunt wall-clock limit, which is the default. The idle watchdog
+defaults to two hours without provider output, and the repetition watchdog stops a subprocess only
+after 200 consecutive identical output lines. Set either watchdog value to `0` to disable it.
 
 Roles: `orchestrator`, `advisor`, `implementer`, `reviewer`, `tester`, `researcher`, `generic`  
 Permissions: `read_only` or `read_write`
@@ -380,7 +392,18 @@ Active workflow fields:
 
 Active repository fields:
 
+- `require_git`: optional strict mode; when `true`, reject a workspace that is not inside a Git worktree. Default: `false`.
 - `require_clean_start`: when `true`, dirty repositories fail before agents run.
+- `exclude_nested_repositories`: treat nested Git/Hg/SVN worktrees as separate trust boundaries and never inspect their contents. Default: `true`.
+- `excluded_paths`: additional ordered gitignore-style patterns that agents must not read, list, modify, or transmit.
+
+Stringbean also reads optional project-local patterns from `.stringbeanignore`. Conventional secret
+material (`.env*`, private-key files, credential directories, and prior run artifacts) is excluded by
+default, while `.env.example`, `.env.sample`, and `.env.template` remain visible. On Linux, the
+subprocess policy preload denies actual opens below concrete excluded paths. The prompt contract also
+requires every provider to skip an excluded path without retrying or delegating the read. To inspect a
+nested repository intentionally, run `sbx` from that repository's own root or explicitly set
+`exclude_nested_repositories: false`.
 
 Reserved config fields are accepted for forward compatibility but are not implemented yet. Non-default values emit `UnsupportedConfigWarning` so they are not silently ignored:
 
@@ -464,9 +487,12 @@ Each run gets `.stringbean/runs/<run-id>/` with:
 
 - Provider CLIs run as subprocesses with no shell interpolation.
 - Environment values are redacted from subprocess environment when output capture is enabled.
+- Git is optional. In a plain directory, Stringbean uses bounded filesystem snapshots instead of rejecting the task.
+- Sensitive patterns and nested repositories are removed from provider context; Linux subprocesses are denied file opens beneath discovered protected paths.
 - The `ro` profile is create-only: new files/directories are allowed, while modifications, deletes, renames, moves, or type changes to existing paths are treated as policy violations.
 - Read-only roles can be checked with repository diff snapshots; unauthorized writes are treated as policy violations.
 - Dirty repositories are warned on startup and can be blocked with `require_clean_start: true`.
+- Provider calls have no wall-clock deadline by default. An idle watchdog and repeated-output watchdog target stuck commands and obvious loops while allowing active multi-hour tasks to continue.
 - No forced git commits/pushes or resets are performed.
 
 ## Troubleshooting

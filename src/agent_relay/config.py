@@ -53,7 +53,9 @@ class AgentConfig(BaseModel):
     command: Optional[List[str]] = None
     prompt_transport: str = "stdin"
     environment_overrides: Dict[str, str] = Field(default_factory=dict)
-    timeout_seconds: float = 1200
+    timeout_seconds: float = 0
+    idle_timeout_seconds: float = 7200
+    max_repeated_output_lines: int = 200
     working_directory: str = "."
     fallback_agent: Optional[str] = None
     mode: Optional[str] = None
@@ -80,9 +82,23 @@ class AgentConfig(BaseModel):
     @field_validator("timeout_seconds")
     @classmethod
     def _validate_timeout_seconds(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("timeout_seconds must be greater than 0")
+        if value < 0:
+            raise ValueError("timeout_seconds must be 0 (disabled) or greater")
         return float(value)
+
+    @field_validator("idle_timeout_seconds")
+    @classmethod
+    def _validate_idle_timeout_seconds(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("idle_timeout_seconds must be 0 (disabled) or greater")
+        return float(value)
+
+    @field_validator("max_repeated_output_lines")
+    @classmethod
+    def _validate_max_repeated_output_lines(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("max_repeated_output_lines must be 0 (disabled) or greater")
+        return int(value)
 
     @field_validator("role")
     @classmethod
@@ -165,9 +181,24 @@ class WorkflowConfig(BaseModel):
 
 
 class RepositoryConfig(BaseModel):
-    require_git: bool = True
+    require_git: bool = False
     require_clean_start: bool = False
     create_checkpoint_commits: bool = False
+    exclude_nested_repositories: bool = True
+    excluded_paths: List[str] = Field(default_factory=list)
+
+    @field_validator("excluded_paths")
+    @classmethod
+    def _validate_excluded_paths(cls, values: List[str]) -> List[str]:
+        normalized: List[str] = []
+        for value in values:
+            value = value.strip()
+            if not value:
+                continue
+            if "\x00" in value or "\n" in value or "\r" in value:
+                raise ValueError("repository.excluded_paths entries must be single-line path patterns")
+            normalized.append(value)
+        return normalized
 
     @model_validator(mode="after")
     def _warn_reserved_contracts(self) -> "RepositoryConfig":

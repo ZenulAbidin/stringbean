@@ -260,7 +260,13 @@ def apply_codex_execution_profile(command: Sequence[str], profile: str) -> list[
     return out
 
 
-def policy_prompt(profile: str, effective_permission: str) -> str:
+def policy_prompt(
+    profile: str,
+    effective_permission: str,
+    *,
+    workspace_root: Path | None = None,
+    excluded_paths: Sequence[str] = (),
+) -> str:
     profile = normalize_execution_profile(profile)
     denied = ", ".join(DENIED_COMMANDS)
     denied_git = ", ".join(f"git {name}" for name in DENIED_GIT_SUBCOMMANDS)
@@ -277,6 +283,23 @@ def policy_prompt(profile: str, effective_permission: str) -> str:
             "pre-existing repository paths. Stringbean will treat forbidden changes as policy "
             "violations, even for agents whose configured role is read_write."
         )
+    scope_policy = ""
+    if workspace_root is not None:
+        scope_policy += (
+            f"\n- Default workspace boundary: {Path(workspace_root).resolve()}. Do not inspect unrelated "
+            "parent or sibling paths. A path explicitly named by the user's task is in scope unless "
+            "an excluded-path rule protects it."
+        )
+    if excluded_paths:
+        rendered_exclusions = ", ".join(str(path) for path in excluded_paths)
+        scope_policy += (
+            "\n- Ordered excluded-path rules (`!` means an allowed exception): "
+            f"{rendered_exclusions}."
+            "\n- Never read, list, search, summarize, modify, or transmit content from paths excluded "
+            "by those rules."
+            "\n- If an excluded path appears relevant, skip it and continue with the rest of the task. "
+            "Do not retry access and do not ask another agent to inspect it."
+        )
     return (
         "Stringbean execution policy:\n"
         f"- {write_policy}\n"
@@ -284,6 +307,7 @@ def policy_prompt(profile: str, effective_permission: str) -> str:
         f"- Do not run these denied commands: {denied}.\n"
         f"- Do not run these denied git operations: {denied_git}.\n"
         "- If a denied operation appears necessary, stop and report it instead of running it."
+        f"{scope_policy}"
     )
 
 
@@ -291,10 +315,13 @@ def _write_policy_preload_source(source_path: Path) -> None:
     source_path.write_text(
         r'''
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <spawn.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -302,6 +329,8 @@ def _write_policy_preload_source(source_path: Path) -> None:
 #include <unistd.h>
 
 extern char **environ;
+
+static __thread int sb_access_guard = 0;
 
 static const char *sb_basename(const char *path) {
     const char *slash;
@@ -467,8 +496,338 @@ static int sb_should_block(const char *path, char *const argv[]) {
     return 0;
 }
 
+static int sb_absolute_path(const char *path, int dirfd, char *output, size_t output_size) {
+    char combined[PATH_MAX];
+    char base[PATH_MAX];
+    char proc_path[64];
+    ssize_t base_len;
+    int written;
+    if (path == NULL || path[0] == '\0') {
+        return 0;
+    }
+    if (path[0] == '/') {
+        written = snprintf(combined, sizeof(combined), "%s", path);
+    } else {
+        if (dirfd == AT_FDCWD) {
+            if (getcwd(base, sizeof(base)) == NULL) {
+                return 0;
+            }
+        } else {
+            written = snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", dirfd);
+            if (written < 0 || (size_t)written >= sizeof(proc_path)) {
+                return 0;
+            }
+            base_len = readlink(proc_path, base, sizeof(base) - 1);
+            if (base_len < 0 || (size_t)base_len >= sizeof(base) - 1) {
+                return 0;
+            }
+            base[base_len] = '\0';
+        }
+        written = snprintf(combined, sizeof(combined), "%s/%s", base, path);
+    }
+    if (written < 0 || (size_t)written >= sizeof(combined)) {
+        return 0;
+    }
+    if (realpath(combined, output) != NULL) {
+        return 1;
+    }
+    written = snprintf(output, output_size, "%s", combined);
+    return written >= 0 && (size_t)written < output_size;
+}
+
+static int sb_path_list_contains(const char *list, const char *path) {
+    const char *start;
+    size_t path_len;
+    if (list == NULL || list[0] == '\0' || path == NULL || path[0] == '\0') {
+        return 0;
+    }
+    path_len = strlen(path);
+    start = list;
+    while (*start != '\0') {
+        const char *end = strchr(start, 0x1f);
+        size_t len = end == NULL ? strlen(start) : (size_t)(end - start);
+        if (
+            len > 0 &&
+            path_len >= len &&
+            strncmp(start, path, len) == 0 &&
+            (path_len == len || path[len] == '/')
+        ) {
+            return 1;
+        }
+        if (end == NULL) {
+            break;
+        }
+        start = end + 1;
+    }
+    return 0;
+}
+
+static int sb_should_block_access(const char *path, int dirfd) {
+    char absolute[PATH_MAX];
+    const char *allowed_paths;
+    const char *excluded_paths;
+    int blocked;
+    if (sb_access_guard) {
+        return 0;
+    }
+    excluded_paths = getenv("STRINGBEAN_POLICY_EXCLUDED_PATHS");
+    if (excluded_paths == NULL || excluded_paths[0] == '\0') {
+        return 0;
+    }
+    sb_access_guard = 1;
+    allowed_paths = getenv("STRINGBEAN_POLICY_ALLOWED_PATHS");
+    blocked = sb_absolute_path(path, dirfd, absolute, sizeof(absolute)) &&
+        !sb_path_list_contains(allowed_paths, absolute) &&
+        sb_path_list_contains(excluded_paths, absolute);
+    sb_access_guard = 0;
+    if (blocked) {
+        fprintf(stderr, "stringbean policy: excluded path access denied; skip it without retrying.\n");
+    }
+    return blocked;
+}
+
+static int sb_open_needs_mode(int flags) {
+    if ((flags & O_CREAT) != 0) {
+        return 1;
+    }
+#ifdef O_TMPFILE
+    if ((flags & O_TMPFILE) == O_TMPFILE) {
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+int open(const char *pathname, int flags, ...) {
+    static int (*real_open)(const char *, int, ...) = NULL;
+    mode_t mode = 0;
+    if (sb_open_needs_mode(flags)) {
+        va_list args;
+        va_start(args, flags);
+        mode = va_arg(args, mode_t);
+        va_end(args);
+    }
+    if (sb_should_block_access(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_open == NULL) {
+        real_open = dlsym(RTLD_NEXT, "open");
+    }
+    return sb_open_needs_mode(flags) ? real_open(pathname, flags, mode) : real_open(pathname, flags);
+}
+
+int open64(const char *pathname, int flags, ...) {
+    static int (*real_open64)(const char *, int, ...) = NULL;
+    mode_t mode = 0;
+    if (sb_open_needs_mode(flags)) {
+        va_list args;
+        va_start(args, flags);
+        mode = va_arg(args, mode_t);
+        va_end(args);
+    }
+    if (sb_should_block_access(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_open64 == NULL) {
+        real_open64 = dlsym(RTLD_NEXT, "open64");
+    }
+    return sb_open_needs_mode(flags) ? real_open64(pathname, flags, mode) : real_open64(pathname, flags);
+}
+
+int openat(int dirfd, const char *pathname, int flags, ...) {
+    static int (*real_openat)(int, const char *, int, ...) = NULL;
+    mode_t mode = 0;
+    if (sb_open_needs_mode(flags)) {
+        va_list args;
+        va_start(args, flags);
+        mode = va_arg(args, mode_t);
+        va_end(args);
+    }
+    if (sb_should_block_access(pathname, dirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_openat == NULL) {
+        real_openat = dlsym(RTLD_NEXT, "openat");
+    }
+    return sb_open_needs_mode(flags) ? real_openat(dirfd, pathname, flags, mode) : real_openat(dirfd, pathname, flags);
+}
+
+int openat64(int dirfd, const char *pathname, int flags, ...) {
+    static int (*real_openat64)(int, const char *, int, ...) = NULL;
+    mode_t mode = 0;
+    if (sb_open_needs_mode(flags)) {
+        va_list args;
+        va_start(args, flags);
+        mode = va_arg(args, mode_t);
+        va_end(args);
+    }
+    if (sb_should_block_access(pathname, dirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_openat64 == NULL) {
+        real_openat64 = dlsym(RTLD_NEXT, "openat64");
+    }
+    return sb_open_needs_mode(flags) ? real_openat64(dirfd, pathname, flags, mode) : real_openat64(dirfd, pathname, flags);
+}
+
+FILE *fopen(const char *pathname, const char *mode) {
+    static FILE *(*real_fopen)(const char *, const char *) = NULL;
+    if (sb_should_block_access(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return NULL;
+    }
+    if (real_fopen == NULL) {
+        real_fopen = dlsym(RTLD_NEXT, "fopen");
+    }
+    return real_fopen(pathname, mode);
+}
+
+FILE *fopen64(const char *pathname, const char *mode) {
+    static FILE *(*real_fopen64)(const char *, const char *) = NULL;
+    if (sb_should_block_access(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return NULL;
+    }
+    if (real_fopen64 == NULL) {
+        real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
+    }
+    return real_fopen64(pathname, mode);
+}
+
+DIR *opendir(const char *name) {
+    static DIR *(*real_opendir)(const char *) = NULL;
+    if (sb_should_block_access(name, AT_FDCWD)) {
+        errno = EACCES;
+        return NULL;
+    }
+    if (real_opendir == NULL) {
+        real_opendir = dlsym(RTLD_NEXT, "opendir");
+    }
+    return real_opendir(name);
+}
+
+static const char *const sb_preserved_env_names[] = {
+    "LD_PRELOAD",
+    "STRINGBEAN_POLICY_BIN",
+    "STRINGBEAN_POLICY_PRELOAD",
+    "STRINGBEAN_POLICY_PRELOAD_ACTIVE",
+    "STRINGBEAN_POLICY_WRAPPERS_ACTIVE",
+    "STRINGBEAN_POLICY_EXCLUDED_PATHS",
+    "STRINGBEAN_POLICY_ALLOWED_PATHS",
+    "STRINGBEAN_DENIED_COMMANDS",
+    "STRINGBEAN_DENIED_GIT_SUBCOMMANDS",
+    NULL
+};
+
+static int sb_env_entry_has_name(const char *entry, const char *name) {
+    size_t len;
+    if (entry == NULL || name == NULL) {
+        return 0;
+    }
+    len = strlen(name);
+    return strncmp(entry, name, len) == 0 && entry[len] == '=';
+}
+
+static int sb_is_preserved_env_entry(const char *entry) {
+    size_t idx;
+    for (idx = 0; sb_preserved_env_names[idx] != NULL; idx++) {
+        if (sb_env_entry_has_name(entry, sb_preserved_env_names[idx])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void sb_free_hardened_env(
+    char **environment,
+    size_t appended_start,
+    size_t appended_count
+) {
+    size_t idx;
+    if (environment == NULL) {
+        return;
+    }
+    for (idx = 0; idx < appended_count; idx++) {
+        free(environment[appended_start + idx]);
+    }
+    free(environment);
+}
+
+static int sb_harden_child_env(
+    char *const envp[],
+    char ***output,
+    size_t *appended_start,
+    size_t *appended_count
+) {
+    const char *policy_preload = getenv("STRINGBEAN_POLICY_PRELOAD");
+    size_t input_count = 0;
+    size_t preserved_count = 0;
+    size_t kept_count = 0;
+    size_t idx;
+    char **hardened;
+    if (policy_preload == NULL || policy_preload[0] == '\0') {
+        *output = NULL;
+        *appended_start = 0;
+        *appended_count = 0;
+        return 0;
+    }
+    if (envp != NULL) {
+        while (envp[input_count] != NULL) {
+            input_count++;
+        }
+    }
+    for (idx = 0; sb_preserved_env_names[idx] != NULL; idx++) {
+        const char *value = getenv(sb_preserved_env_names[idx]);
+        if (value != NULL) {
+            preserved_count++;
+        }
+    }
+    hardened = calloc(input_count + preserved_count + 1, sizeof(char *));
+    if (hardened == NULL) {
+        return -1;
+    }
+    for (idx = 0; idx < input_count; idx++) {
+        if (!sb_is_preserved_env_entry(envp[idx])) {
+            hardened[kept_count++] = envp[idx];
+        }
+    }
+    *appended_start = kept_count;
+    *appended_count = 0;
+    for (idx = 0; sb_preserved_env_names[idx] != NULL; idx++) {
+        const char *name = sb_preserved_env_names[idx];
+        const char *value = getenv(name);
+        size_t length;
+        char *entry;
+        if (value == NULL) {
+            continue;
+        }
+        length = strlen(name) + strlen(value) + 2;
+        entry = malloc(length);
+        if (entry == NULL) {
+            sb_free_hardened_env(hardened, *appended_start, *appended_count);
+            *output = NULL;
+            return -1;
+        }
+        snprintf(entry, length, "%s=%s", name, value);
+        hardened[kept_count++] = entry;
+        (*appended_count)++;
+    }
+    hardened[kept_count] = NULL;
+    *output = hardened;
+    return 1;
+}
+
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     static int (*real_execve)(const char *, char *const[], char *const[]) = NULL;
+    char **hardened_env = NULL;
+    size_t appended_start = 0;
+    size_t appended_count = 0;
+    int harden_result;
+    int result;
     if (sb_should_block(pathname, argv)) {
         errno = EACCES;
         return -1;
@@ -476,7 +835,14 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     if (real_execve == NULL) {
         real_execve = dlsym(RTLD_NEXT, "execve");
     }
-    return real_execve(pathname, argv, envp);
+    harden_result = sb_harden_child_env(envp, &hardened_env, &appended_start, &appended_count);
+    if (harden_result < 0) {
+        errno = ENOMEM;
+        return -1;
+    }
+    result = real_execve(pathname, argv, harden_result > 0 ? hardened_env : envp);
+    sb_free_hardened_env(hardened_env, appended_start, appended_count);
+    return result;
 }
 
 int execv(const char *path, char *const argv[]) {
@@ -505,6 +871,11 @@ int execvp(const char *file, char *const argv[]) {
 
 int execvpe(const char *file, char *const argv[], char *const envp[]) {
     static int (*real_execvpe)(const char *, char *const[], char *const[]) = NULL;
+    char **hardened_env = NULL;
+    size_t appended_start = 0;
+    size_t appended_count = 0;
+    int harden_result;
+    int result;
     if (sb_should_block(file, argv)) {
         errno = EACCES;
         return -1;
@@ -512,7 +883,14 @@ int execvpe(const char *file, char *const argv[], char *const envp[]) {
     if (real_execvpe == NULL) {
         real_execvpe = dlsym(RTLD_NEXT, "execvpe");
     }
-    return real_execvpe(file, argv, envp);
+    harden_result = sb_harden_child_env(envp, &hardened_env, &appended_start, &appended_count);
+    if (harden_result < 0) {
+        errno = ENOMEM;
+        return -1;
+    }
+    result = real_execvpe(file, argv, harden_result > 0 ? hardened_env : envp);
+    sb_free_hardened_env(hardened_env, appended_start, appended_count);
+    return result;
 }
 
 int posix_spawn(
@@ -524,13 +902,31 @@ int posix_spawn(
     char *const envp[]
 ) {
     static int (*real_posix_spawn)(pid_t *, const char *, const posix_spawn_file_actions_t *, const posix_spawnattr_t *, char *const[], char *const[]) = NULL;
+    char **hardened_env = NULL;
+    size_t appended_start = 0;
+    size_t appended_count = 0;
+    int harden_result;
+    int result;
     if (sb_should_block(path, argv)) {
         return EACCES;
     }
     if (real_posix_spawn == NULL) {
         real_posix_spawn = dlsym(RTLD_NEXT, "posix_spawn");
     }
-    return real_posix_spawn(pid, path, file_actions, attrp, argv, envp);
+    harden_result = sb_harden_child_env(envp, &hardened_env, &appended_start, &appended_count);
+    if (harden_result < 0) {
+        return ENOMEM;
+    }
+    result = real_posix_spawn(
+        pid,
+        path,
+        file_actions,
+        attrp,
+        argv,
+        harden_result > 0 ? hardened_env : envp
+    );
+    sb_free_hardened_env(hardened_env, appended_start, appended_count);
+    return result;
 }
 
 int posix_spawnp(
@@ -542,13 +938,31 @@ int posix_spawnp(
     char *const envp[]
 ) {
     static int (*real_posix_spawnp)(pid_t *, const char *, const posix_spawn_file_actions_t *, const posix_spawnattr_t *, char *const[], char *const[]) = NULL;
+    char **hardened_env = NULL;
+    size_t appended_start = 0;
+    size_t appended_count = 0;
+    int harden_result;
+    int result;
     if (sb_should_block(file, argv)) {
         return EACCES;
     }
     if (real_posix_spawnp == NULL) {
         real_posix_spawnp = dlsym(RTLD_NEXT, "posix_spawnp");
     }
-    return real_posix_spawnp(pid, file, file_actions, attrp, argv, envp);
+    harden_result = sb_harden_child_env(envp, &hardened_env, &appended_start, &appended_count);
+    if (harden_result < 0) {
+        return ENOMEM;
+    }
+    result = real_posix_spawnp(
+        pid,
+        file,
+        file_actions,
+        attrp,
+        argv,
+        harden_result > 0 ? hardened_env : envp
+    );
+    sb_free_hardened_env(hardened_env, appended_start, appended_count);
+    return result;
 }
 '''.lstrip(),
         encoding="utf-8",

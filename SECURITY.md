@@ -17,9 +17,14 @@ Include:
 
 - Do not hardcode credentials in config files.
 - Use `permissions` in agent configs carefully for write-capable roles.
+- Put project-specific production/auth material in `.stringbeanignore` or `repository.excluded_paths`; nested repositories are separate trust boundaries by default.
 - Review `.stringbean/config.yaml` and `.stringbean/runs/*` before sharing publicly.
 - Do not commit `.stringbean/cli-capabilities.json`; it is machine-local probe output.
 
 ## Scope
 
 stringbean relies on external CLI tools (codex/claude/grok). Review those tools' own security and authentication behavior as well.
+
+On Linux, Stringbean's policy preload denies provider subprocess opens under concrete excluded paths.
+The same exclusions are removed from generated provider context on every platform. This is a local
+defense-in-depth boundary, not a replacement for provider account controls or host-level isolation.

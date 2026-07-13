@@ -35,7 +35,7 @@ from .state import RunDirectory, RunState, create_new_run, list_runs
 from .templates import available_template_names
 from .utils import git_status_short, stable_id
 from .workflow import WorkflowEngine
-from .policy import normalize_execution_profile
+from .policy import git_command, internal_subprocess_env, normalize_execution_profile
 
 app = typer.Typer(help=f"{PROJECT_NAME} local orchestrator CLI.")
 console = Console()
@@ -586,9 +586,7 @@ def doctor(
         problems.append("python version is below 3.10")
 
     git_ok = shutil.which("git") is not None
-    table.add_row("git", "ok" if git_ok else "missing", "installed" if git_ok else "not in PATH")
-    if not git_ok:
-        problems.append("git missing")
+    table.add_row("git", "ok" if git_ok else "optional", "installed" if git_ok else "not in PATH; directory mode available")
 
     if not cfg_path.exists():
         table.add_row("config", "missing", str(cfg_path))
@@ -602,12 +600,26 @@ def doctor(
             problems.append("invalid config")
 
     if cfg is not None:
-        repo_status = git_status_short(root)
-        table.add_row("repo status", "clean" if not repo_status.strip() else "dirty", repo_status or "clean")
-        if repo_status.strip() and cfg.repository.require_clean_start:
-            problems.append("repository is dirty and require_clean_start=true")
-        if cfg.repository.require_git and not git_ok:
-            problems.append("git required by repository config")
+        repository_git = False
+        if git_ok:
+            proc = subprocess.run(
+                [git_command(), "rev-parse", "--is-inside-work-tree"],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=internal_subprocess_env(),
+            )
+            repository_git = proc.returncode == 0 and proc.stdout.strip() == "true"
+        if repository_git:
+            repo_status = git_status_short(root)
+            table.add_row("workspace", "git", "clean" if not repo_status.strip() else "dirty")
+            if repo_status.strip() and cfg.repository.require_clean_start:
+                problems.append("repository is dirty and require_clean_start=true")
+        else:
+            table.add_row("workspace", "directory", "Git metadata is not required")
+        if cfg.repository.require_git and not repository_git:
+            problems.append("Git worktree required by repository config")
 
         for role, agent in cfg.agents.items():
             exe = (agent.command or [agent.adapter])[0]

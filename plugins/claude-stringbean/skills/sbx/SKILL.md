@@ -33,13 +33,13 @@ sbx "<task text>" <flags> --plugin-compact-output
 
 4. Show useful live Stringbean output while the command runs. Lines beginning with
    `STRINGBEAN_INTERMEDIATE:` are live progress only, not final output.
-   Run commands in the foreground (`run_in_background: false`). Use 120 seconds for `--dry-run`;
-   for real workflows request at least 1,800 seconds and preferably 3,600 seconds when the Bash
-   tool accepts it. Never start a background run merely to make the tool call return sooner.
-   If the host backgrounds a long command or returns a task ID, use blocking `TaskOutput` calls
-   until that task completes. Repeat bounded waits as needed while fresh five-second heartbeat
-   or agent-output lines continue to arrive. Do not use `Monitor`, do not tell the user to wait,
-   and do not end the turn before the command completes or fails.
+   Run in the foreground when Bash can preserve a live process beyond one tool wait. If the host's
+   timeout would terminate the process, start it as a background task and immediately use blocking
+   `TaskOutput` calls instead. A timeout is a polling boundary, never permission to kill Stringbean.
+   Repeat bounded waits for as many hours as needed while fresh five-second heartbeat or agent-output
+   lines continue to arrive. Stop only after a confirmed process failure, an explicit Stringbean
+   watchdog result, or clear repeated no-progress output. Do not use `Monitor`, do not tell the user
+   to wait, and do not end the turn before the command completes or fails.
    Each provider subprocess launch is marked with `STRINGBEAN_INTERMEDIATE: Command:`.
    Claude subprocess events are reconstructed live as concise `assistant:`, `Tool Call:`, and
    `Executed:` lines; do not wait for the subprocess to exit before showing those lines.

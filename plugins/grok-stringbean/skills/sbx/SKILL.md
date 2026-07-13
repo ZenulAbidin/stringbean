@@ -34,9 +34,11 @@ sbx "<task and flags>" --plugin-full-output
 
 4. Show useful live Stringbean output while the command runs. Lines beginning with
    `STRINGBEAN_INTERMEDIATE:` are live progress only, not final output.
-   Give `run_terminal_command` at least 1,800 seconds when a timeout can be supplied.
-   If it returns a running command/session, poll every 5-10 seconds. Do not kill or replace
-   the command while fresh five-second heartbeat or agent-output lines continue to arrive.
+   Use the longest supported wait or a persistent command session. Treat a host timeout as a
+   polling boundary, never permission to kill Stringbean. If a running command/session is returned,
+   poll every 5-10 seconds for as many hours as needed. Do not kill or replace the command while
+   fresh five-second heartbeat or agent-output lines continue to arrive. Stop only after a confirmed
+   process failure, an explicit Stringbean watchdog result, or clear repeated no-progress output.
 5. After completion, read the final result between:
 
 ```text

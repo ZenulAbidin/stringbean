@@ -100,12 +100,11 @@ def test_installed_sbx_entrypoint_help_exits_cleanly(monkeypatch, capsys):
     assert "Usage:" in capsys.readouterr().out
 
 
-def test_sbx_script_targets_invocation_directory_not_stringbean_source(tmp_path: Path):
+def test_sbx_script_targets_non_git_invocation_directory_not_stringbean_source(tmp_path: Path):
     source_repo = Path(__file__).resolve().parents[1]
     target_repo = tmp_path / "target-repo"
     target_repo.mkdir()
     run_id = f"target-cwd-probe-{tmp_path.name}"
-    subprocess.run(["git", "init"], cwd=target_repo, check=True, capture_output=True)
     (target_repo / "target-marker.txt").write_text("target repo marker\n", encoding="utf-8")
 
     init = subprocess.run(
@@ -135,7 +134,10 @@ def test_sbx_script_targets_invocation_directory_not_stringbean_source(tmp_path:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "target-marker.txt" in result.stdout
+    assert "'workspace_root':" in result.stdout
+    assert "target-repo" in "".join(result.stdout.split())
+    assert "'repository_git': False" in result.stdout
+    assert "'would_fail': False" in result.stdout
     assert (tmp_path / ".stringbean" / "runs" / run_id / "state.json").exists()
     assert not (source_repo / ".stringbean" / "runs" / run_id).exists()
 
@@ -301,6 +303,21 @@ def test_plugin_wrappers_add_output_mode_and_five_second_heartbeat(
     assert output_flag in args
     interval_index = args.index("--codex-progress-interval")
     assert args[interval_index + 1] == "5"
+
+
+def test_plugin_skills_treat_host_timeouts_as_polling_boundaries():
+    repo = Path(__file__).resolve().parents[1]
+    skill_paths = (
+        repo / "plugins" / "stringbean" / "skills" / "sbx" / "SKILL.md",
+        repo / "plugins" / "claude-stringbean" / "skills" / "sbx" / "SKILL.md",
+        repo / "plugins" / "grok-stringbean" / "skills" / "sbx" / "SKILL.md",
+    )
+
+    for path in skill_paths:
+        text = path.read_text(encoding="utf-8")
+        assert "polling boundary" in text
+        assert "1,800 seconds" not in text
+        assert "3,600 seconds" not in text
 
 
 def test_claude_wrapper_separates_flags_from_single_argument(tmp_path: Path):
@@ -516,6 +533,20 @@ def test_init_and_status_cycle(tmp_path: Path, monkeypatch):
 
     state = runner.invoke(cli.app, ["agents"])
     assert state.exit_code == 0
+
+
+def test_doctor_accepts_non_git_directory_when_git_is_not_required(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_placeholder_config(tmp_path)
+    real_which = cli.shutil.which
+    monkeypatch.setattr(cli.shutil, "which", lambda command: None if command == "git" else real_which(command))
+
+    result = runner.invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "directory mode available" in result.stdout
+    assert "Git metadata is not required" in result.stdout
+    assert "Problems:" not in result.stdout
 
 
 def test_cli_repeated_run_id_returns_usable_suffixed_run_dir(tmp_path: Path, monkeypatch):

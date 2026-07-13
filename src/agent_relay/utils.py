@@ -90,7 +90,7 @@ def git_status_short(repo_root: Path) -> str:
 
     try:
         proc = subprocess.run(
-            [git_command(), "status", "--short"],
+            [git_command(), "status", "--short", "--", "."],
             cwd=repo_root,
             check=False,
             capture_output=True,

@@ -5,9 +5,9 @@ import os
 import signal
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 from typing import Callable, Dict, List, Optional
 
 from .policy import command_policy_denial
@@ -18,7 +18,9 @@ class RunnerConfig:
     command: List[str]
     working_directory: Path
     env: Optional[Dict[str, str]] = None
-    timeout_seconds: float = 1200
+    timeout_seconds: float = 0
+    idle_timeout_seconds: float = 7200
+    max_repeated_output_lines: int = 200
     prompt: Optional[str] = None
     on_stdout_line: Optional[Callable[[str], None]] = None
     on_stderr_line: Optional[Callable[[str], None]] = None
@@ -35,6 +37,39 @@ class RunnerOutput:
     end_time: str
     raw_stdout: str
     raw_stderr: str
+
+
+@dataclass
+class _OutputWatchdog:
+    max_repeated_output_lines: int
+    last_activity: float = field(default_factory=time.monotonic)
+    last_line: str = ""
+    repeated_lines: int = 0
+    repeated_line: str = ""
+    lock: Lock = field(default_factory=Lock)
+
+    def observe(self, text: str) -> None:
+        with self.lock:
+            self.last_activity = time.monotonic()
+            for raw_line in text.splitlines():
+                line = " ".join(raw_line.split())
+                if not line:
+                    continue
+                if line == self.last_line:
+                    self.repeated_lines += 1
+                else:
+                    self.last_line = line
+                    self.repeated_lines = 1
+                    self.repeated_line = ""
+                if (
+                    self.max_repeated_output_lines > 0
+                    and self.repeated_lines >= self.max_repeated_output_lines
+                ):
+                    self.repeated_line = line[:160]
+
+    def snapshot(self) -> tuple[float, int, str]:
+        with self.lock:
+            return self.last_activity, self.repeated_lines, self.repeated_line
 
 
 def _safe_invoke(callback: Callable[[str], None], line: str) -> None:
@@ -57,7 +92,12 @@ def _to_str_lines(buffer: bytes) -> str:
     return buffer.decode("utf-8", errors="replace")
 
 
-def _pump_stream(stream: Optional[object], cb: Optional[Callable[[str], None]], out: list[str]) -> None:
+def _pump_stream(
+    stream: Optional[object],
+    cb: Optional[Callable[[str], None]],
+    out: list[str],
+    watchdog: _OutputWatchdog | None = None,
+) -> None:
     if stream is None:
         return
     read_available = getattr(stream, "read1", None)
@@ -78,16 +118,25 @@ def _pump_stream(stream: Optional[object], cb: Optional[Callable[[str], None]], 
             break
         text = _to_str_lines(chunk)
         out.append(text)
+        if watchdog is not None:
+            watchdog.observe(text)
         if cb:
             _safe_invoke(cb, text)
 
 
 async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
     start = time.time()
+    monotonic_start = time.monotonic()
     start_iso = _timestamp_iso(start)
     timeout_seconds = float(cfg.timeout_seconds)
-    if timeout_seconds <= 0:
-        raise ValueError("timeout_seconds must be greater than 0")
+    idle_timeout_seconds = float(cfg.idle_timeout_seconds)
+    max_repeated_output_lines = int(cfg.max_repeated_output_lines)
+    if timeout_seconds < 0:
+        raise ValueError("timeout_seconds must be 0 (disabled) or greater")
+    if idle_timeout_seconds < 0:
+        raise ValueError("idle_timeout_seconds must be 0 (disabled) or greater")
+    if max_repeated_output_lines < 0:
+        raise ValueError("max_repeated_output_lines must be 0 (disabled) or greater")
 
     env = os.environ.copy()
     if cfg.env:
@@ -122,26 +171,37 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
 
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
+    watchdog = _OutputWatchdog(max_repeated_output_lines=max_repeated_output_lines)
 
     threads = [
-        Thread(target=_pump_stream, args=(proc.stdout, cfg.on_stdout_line, stdout_chunks), daemon=True),
-        Thread(target=_pump_stream, args=(proc.stderr, cfg.on_stderr_line, stderr_chunks), daemon=True),
+        Thread(target=_pump_stream, args=(proc.stdout, cfg.on_stdout_line, stdout_chunks, watchdog), daemon=True),
+        Thread(target=_pump_stream, args=(proc.stderr, cfg.on_stderr_line, stderr_chunks, watchdog), daemon=True),
     ]
     for thread in threads:
         thread.start()
 
     try:
-        end_by = start + timeout_seconds
-        next_progress_at = start + float(cfg.progress_interval_seconds)
+        end_by = monotonic_start + timeout_seconds if timeout_seconds > 0 else None
+        next_progress_at = monotonic_start + float(cfg.progress_interval_seconds)
         while True:
             code = proc.poll()
             if code is not None:
                 break
-            now = time.time()
-            if now >= end_by:
+            now = time.monotonic()
+            if end_by is not None and now >= end_by:
                 raise TimeoutError(f"process timed out after {timeout_seconds} seconds")
+            last_activity, repeated_lines, repeated_line = watchdog.snapshot()
+            if idle_timeout_seconds > 0 and now - last_activity >= idle_timeout_seconds:
+                raise TimeoutError(
+                    f"process produced no output for {idle_timeout_seconds} seconds and appears stuck"
+                )
+            if max_repeated_output_lines > 0 and repeated_line:
+                raise TimeoutError(
+                    "process appears to be in an output loop after repeating one line "
+                    f"{repeated_lines} times: {repeated_line}"
+                )
             if cfg.on_progress and cfg.progress_interval_seconds > 0 and now >= next_progress_at:
-                _safe_invoke_progress(cfg.on_progress, now - start)
+                _safe_invoke_progress(cfg.on_progress, now - monotonic_start)
                 next_progress_at = now + float(cfg.progress_interval_seconds)
             await asyncio.sleep(0.05)
     except TimeoutError:

@@ -29,9 +29,12 @@ plugins/stringbean/scripts/sbx-codex "<task and flags>"
    `rw`; use `--ro` only when the user explicitly asks for create-only/read-only behavior.
 5. Show useful live Stringbean output while the command runs. Lines beginning with
    `STRINGBEAN_INTERMEDIATE:` are progress/status lines only, not final output.
-   Use a terminal timeout of at least 1,800 seconds when the tool supports one. If the
-   terminal yields a running session, poll it every 5-10 seconds and do not terminate it
-   while fresh Stringbean heartbeat or agent-output lines continue to arrive.
+   Use the host's longest non-destructive wait or a persistent terminal session. Treat every
+   finite host timeout as a polling boundary, never permission to kill the workflow. If the terminal yields a running
+   session, poll it every 5-10 seconds and continue across as many bounded waits as necessary.
+   Do not terminate while fresh Stringbean heartbeat or agent-output lines continue to arrive.
+   Multi-hour implementation calls are valid. Stop only after a confirmed process failure, an
+   explicit Stringbean watchdog result, or clear repeated no-progress output.
 6. After the command finishes, find the final block between:
 
 ```text

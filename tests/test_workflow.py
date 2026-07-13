@@ -2184,6 +2184,23 @@ def test_require_git_blocks_non_git_repository_without_rewriting_task(tmp_path: 
     assert not run_dir.task_path.exists()
 
 
+def test_default_repository_config_completes_in_non_git_directory(tmp_path: Path):
+    workspace = tmp_path / "plain-directory"
+    workspace.mkdir()
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    cfg.repository = RepositoryConfig()
+    run_dir = create_new_run(tmp_path / "run-store", "run-non-git-default", "Directory mode", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, repo_root=workspace, quiet=True)
+
+    result = asyncio.run(engine.run("Implement in a plain directory"))
+
+    assert result["status"] == "COMPLETED"
+    assert (workspace / "implemented.txt").exists()
+
+
 def test_prevent_concurrent_write_agents_by_sequential_calls(tmp_path: Path):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")
