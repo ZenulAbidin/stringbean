@@ -759,7 +759,7 @@ def _print_run_summary(summary: dict, *, dry_run: bool, codex_final: bool = Fals
 
     status = summary.get("status", "UNKNOWN")
     result = summary.get("result")
-    errors = summary.get("errors")
+    errors = summary.get("errors") or summary.get("error")
     implemented = summary.get("implemented") or []
     review_round = summary.get("review_round")
     event_log = summary.get("event_log")
@@ -797,7 +797,7 @@ def _print_codex_final_summary(summary: dict, *, dry_run: bool) -> None:
         result = summary.get("result")
         if result:
             print(f"Result: {result}")
-        errors = summary.get("errors")
+        errors = summary.get("errors") or summary.get("error")
         if errors:
             print(f"Error: {errors}")
         implemented = summary.get("implemented") or []

@@ -218,7 +218,7 @@ workflow:
   max_review_rounds: 2
   max_total_agent_calls: 24
   orchestrator: gpt55-high
-  parallel_read_only_agents: true
+  parallel_read_only_agents: false
   parallel_write_agents: false
   researcher: []
   reviewers:

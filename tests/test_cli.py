@@ -154,6 +154,36 @@ def test_codex_final_rejects_local_fallback_cat_config_with_sentinel_block(tmp_p
     assert "STRINGBEAN_FINAL_END" in result.stdout
 
 
+def test_run_summary_prints_singular_error_field(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".stringbean").mkdir()
+    cfg = cli._preset_config("D")
+    cfg.repository.require_git = True
+    monkeypatch.setattr(cli, "load_config", lambda _path: cfg)
+
+    result = runner.invoke(cli.app, ["run", "inspect tmp", "--quiet"])
+
+    assert result.exit_code == 0
+    assert "Status: FAILED" in result.stdout
+    assert "Error: repository is not a git worktree" in result.stdout
+
+
+def test_codex_final_summary_prints_singular_error_field(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".stringbean").mkdir()
+    cfg = cli._preset_config("D")
+    cfg.repository.require_git = True
+    monkeypatch.setattr(cli, "load_config", lambda _path: cfg)
+
+    result = runner.invoke(cli.app, ["run", "inspect tmp", "--codex-final"])
+
+    assert result.exit_code == 0
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "Status: FAILED" in result.stdout
+    assert "Error: repository is not a git worktree" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
 def test_init_and_status_cycle(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
