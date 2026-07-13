@@ -636,7 +636,7 @@ def _run_engine(
             role_modes=role_modes,
         )
     )
-    return {"run_id": selected_run_id, "summary": summary}
+    return {"run_id": run_dir.run_id, "summary": summary}
 
 
 def _latest_stderr(run_path: Path) -> Optional[Path]:

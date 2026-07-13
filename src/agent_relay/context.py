@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List
 
+from .policy import git_command, internal_subprocess_env
 from .utils import git_status_short
 
 
@@ -25,20 +26,22 @@ def collect_repo_context(root: Path) -> Dict[str, object]:
     status = ""
     try:
         proc = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            [git_command(), "rev-parse", "--show-toplevel"],
             cwd=root,
             capture_output=True,
             text=True,
             check=False,
+            env=internal_subprocess_env(),
         )
         if proc.returncode == 0:
             git_root = Path(proc.stdout.strip())
         proc2 = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            [git_command(), "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=root,
             capture_output=True,
             text=True,
             check=False,
+            env=internal_subprocess_env(),
         )
         if proc2.returncode == 0:
             branch = proc2.stdout.strip()

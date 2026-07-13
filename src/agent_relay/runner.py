@@ -10,6 +10,8 @@ from pathlib import Path
 from threading import Thread
 from typing import Callable, Dict, List, Optional
 
+from .policy import command_policy_denial
+
 
 @dataclass
 class RunnerConfig:
@@ -78,6 +80,19 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
     env = os.environ.copy()
     if cfg.env:
         env.update(cfg.env)
+
+    denial = command_policy_denial(cfg.command, env)
+    if denial is not None:
+        end = time.time()
+        return RunnerOutput(
+            command=cfg.command,
+            exit_code=126,
+            duration_seconds=end - start,
+            start_time=start_iso,
+            end_time=_timestamp_iso(end),
+            raw_stdout="",
+            raw_stderr=f"{denial}\n",
+        )
 
     proc = subprocess.Popen(
         cfg.command,

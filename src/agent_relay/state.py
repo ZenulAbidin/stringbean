@@ -78,6 +78,8 @@ class RunState:
     @classmethod
     def load(cls, path: Path) -> "RunState":
         data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("execution_profile") is None:
+            data["execution_profile"] = "ro"
         return cls(path, RunStateModel.model_validate(data))
 
     def write(self) -> None:
@@ -103,6 +105,20 @@ class RunEventStore:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def _create_unique_run_directory(root: Path, run_id: str) -> RunDirectory:
+    attempt = 0
+    while True:
+        candidate = run_id if attempt == 0 else f"{run_id}-{attempt + 1}"
+        rd = RunDirectory(root, candidate)
+        try:
+            rd.path.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            attempt += 1
+            continue
+        rd.calls_dir.mkdir(parents=True, exist_ok=True)
+        return rd
+
+
 def create_new_run(
     root: Path,
     run_id: str,
@@ -111,16 +127,11 @@ def create_new_run(
     selected_agents: Dict[str, str],
     execution_profile: str = "rw",
 ) -> RunDirectory:
-    rd = RunDirectory(root, run_id)
-    if rd.path.exists():
-        from shutil import rmtree
-
-        rmtree(rd.path, ignore_errors=True)
-    rd.create()
+    rd = _create_unique_run_directory(root, run_id)
     state = RunState(
         rd.state_path,
         RunStateModel(
-            run_id=run_id,
+            run_id=rd.run_id,
             task=task,
             created_at=now_iso(),
             updated_at=now_iso(),
@@ -136,7 +147,7 @@ def create_new_run(
     rd.manifest.write_text(
         json.dumps(
             {
-                "run_id": run_id,
+                "run_id": rd.run_id,
                 "task": task,
                 "status": RunStatus.RECEIVED.value,
                 "execution_profile": execution_profile,

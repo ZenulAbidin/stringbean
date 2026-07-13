@@ -18,7 +18,11 @@ import time
 
 
 def _status_file() -> pathlib.Path:
-    return pathlib.Path(".stringbean-fake-state.json")
+    override = os.environ.get("STRINGBEAN_FAKE_STATE_PATH")
+    if override:
+        return pathlib.Path(override)
+    cwd = pathlib.Path.cwd()
+    return cwd.parent / f"{cwd.name}.stringbean-fake-state.json"
 
 
 def _count(name: str) -> int:

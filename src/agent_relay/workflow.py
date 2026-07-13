@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import tempfile
 from datetime import datetime, timezone
@@ -29,17 +30,26 @@ from .parser import parse_structured_output
 from .policy import (
     DENIED_COMMANDS,
     DENIED_GIT_SUBCOMMANDS,
+    POLICY_PRELOAD_NAME,
     apply_codex_execution_profile,
+    git_command,
     install_command_policy_wrappers,
+    internal_subprocess_env,
     normalize_execution_profile,
+    path_without_policy_bins,
     policy_prompt,
 )
 from .runner import RunnerConfig, RunnerOutput, run_subprocess
 from .state import CallStore, RunDirectory, RunEventStore, RunState, now_iso
 from .streaming import LiveStreamFormatter
 from .templates import render_template
-from .utils import git_status_short
-from .utils import sanitize_environment
+from .utils import (
+    environment_redaction_values,
+    git_status_short,
+    merged_environment,
+    redact_environment_payload,
+    redact_environment_text,
+)
 from pydantic import BaseModel
 
 
@@ -52,6 +62,9 @@ ADAPTERS = {
 
 
 MODE_CHOICES = {"auto", "low", "medium", "high"}
+_STATUS_RENAME_SEPARATOR = "\0"
+_NON_GIT_STATUS_PREFIX = "NG:"
+PathContentState = Tuple[str, bytes, Optional[int]]
 
 
 def _now_iso() -> str:
@@ -168,6 +181,7 @@ class WorkflowEngine:
         self.config_snapshot_written = False
         self._agent_stream_open_line = False
         self._agent_stream_formatter: Optional[LiveStreamFormatter] = None
+        self._agent_output_redaction_values: list[str] = []
         self._latest_response_summary: Optional[str] = None
         self._latest_implementation_summary: Optional[str] = None
         self.policy_bin_dir = install_command_policy_wrappers(self.run_dir.path)
@@ -185,6 +199,8 @@ class WorkflowEngine:
         self._print_stream_line(message)
 
     def _write_agent_stream_line(self, line: str) -> None:
+        if self._agent_output_redaction_values:
+            line = redact_environment_text(line, self._agent_output_redaction_values)
         self._print_stream_line(line)
         self._agent_stream_open_line = False
 
@@ -456,43 +472,265 @@ class WorkflowEngine:
         )
 
     @staticmethod
-    def _repo_status_entries(status_text: str) -> Dict[str, str]:
+    def _repo_status_entries(status_output: bytes | str) -> Dict[str, str]:
         entries: Dict[str, str] = {}
-        for line in status_text.splitlines():
-            if len(line) < 4 or not line.strip():
+        if isinstance(status_output, bytes):
+            status_text = status_output.decode("utf-8", errors="surrogateescape")
+        else:
+            status_text = status_output
+        if "\0" not in status_text:
+            for line in status_text.splitlines():
+                if len(line) < 4 or not line.strip():
+                    continue
+                status = line[:2]
+                path_text = line[3:]
+                if "R" in status[:2] or "C" in status[:2]:
+                    rename_paths = WorkflowEngine._split_porcelain_rename_path(path_text)
+                    if rename_paths:
+                        old_path, new_path = rename_paths
+                        entries[f"{old_path}{_STATUS_RENAME_SEPARATOR}{new_path}"] = status
+                        continue
+                path = WorkflowEngine._decode_porcelain_path(path_text)
+                if path:
+                    entries[path] = status
+            return entries
+
+        records = status_text.split("\0")
+        idx = 0
+        while idx < len(records):
+            record = records[idx]
+            idx += 1
+            if len(record) < 4 or not record.strip():
                 continue
-            status = line[:2]
-            path = line[3:]
+            status = record[:2]
+            path = record[3:]
             if path:
-                entries[path] = status
+                if "R" in status[:2] or "C" in status[:2]:
+                    if idx >= len(records):
+                        continue
+                    old_path = records[idx]
+                    idx += 1
+                    entries[f"{old_path}{_STATUS_RENAME_SEPARATOR}{path}"] = status
+                else:
+                    entries[path] = status
         return entries
+
+    @staticmethod
+    def _decode_porcelain_path(path: str) -> str:
+        if not path.startswith('"'):
+            return path
+
+        decoded = bytearray()
+        idx = 1
+        while idx < len(path):
+            char = path[idx]
+            idx += 1
+            if char == '"':
+                break
+            if char != "\\":
+                decoded.extend(char.encode("utf-8", errors="surrogateescape"))
+                continue
+            if idx >= len(path):
+                decoded.extend(b"\\")
+                break
+
+            escaped = path[idx]
+            idx += 1
+            escape_bytes = {
+                "a": b"\a",
+                "b": b"\b",
+                "f": b"\f",
+                "n": b"\n",
+                "r": b"\r",
+                "t": b"\t",
+                "v": b"\v",
+                "\\": b"\\",
+                '"': b'"',
+            }
+            if escaped in escape_bytes:
+                decoded.extend(escape_bytes[escaped])
+                continue
+            if "0" <= escaped <= "7":
+                octal = escaped
+                while idx < len(path) and len(octal) < 3 and "0" <= path[idx] <= "7":
+                    octal += path[idx]
+                    idx += 1
+                decoded.append(int(octal, 8))
+                continue
+            decoded.extend(escaped.encode("utf-8", errors="surrogateescape"))
+
+        return decoded.decode("utf-8", errors="surrogateescape")
+
+    @staticmethod
+    def _split_porcelain_rename_path(path: str) -> Optional[Tuple[str, str]]:
+        in_quote = False
+        escaped = False
+        idx = 0
+        while idx < len(path):
+            char = path[idx]
+            if escaped:
+                escaped = False
+            elif char == "\\" and in_quote:
+                escaped = True
+            elif char == '"':
+                in_quote = not in_quote
+            elif not in_quote and path.startswith(" -> ", idx):
+                old_path = WorkflowEngine._decode_porcelain_path(path[:idx])
+                new_path = WorkflowEngine._decode_porcelain_path(path[idx + 4 :])
+                return old_path, new_path
+            idx += 1
+        return None
 
     def _repo_status_snapshot(self) -> Dict[str, str]:
         try:
             proc = subprocess.run(
-                ["git", "status", "--short", "--untracked-files=all"],
+                [git_command(), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
                 cwd=self.repo_root,
                 check=False,
                 capture_output=True,
-                text=True,
+                text=False,
+                env=internal_subprocess_env(),
             )
-            return self._repo_status_entries(proc.stdout)
+        except FileNotFoundError:
+            return self._non_git_status_snapshot()
+        if proc.returncode == 0:
+            entries = self._repo_status_entries(proc.stdout)
+            for path, status in self._git_ignored_status_snapshot().items():
+                entries.setdefault(path, status)
+            return entries
+        return self._non_git_status_snapshot()
+
+    def _git_ignored_status_snapshot(self) -> Dict[str, str]:
+        try:
+            proc = subprocess.run(
+                [git_command(), "ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+                cwd=self.repo_root,
+                check=False,
+                capture_output=True,
+                text=False,
+                env=internal_subprocess_env(),
+            )
         except FileNotFoundError:
             return {}
+        if proc.returncode != 0:
+            return {}
+        entries: Dict[str, str] = {}
+        for raw in proc.stdout.split(b"\0"):
+            if not raw:
+                continue
+            path = raw.decode("utf-8", errors="surrogateescape")
+            if self._is_internal_run_path(self.repo_root / path):
+                continue
+            path_parts = Path(path).parts
+            for idx in range(1, len(path_parts)):
+                parent = Path(*path_parts[:idx]).as_posix()
+                if parent not in entries:
+                    kind, content, mode = self._path_content_state(parent)
+                    digest = hashlib.sha256(content).hexdigest()
+                    mode_text = "" if mode is None else f":{mode:o}"
+                    entries[parent] = f"{_NON_GIT_STATUS_PREFIX}{kind}:{digest}{mode_text}"
+            kind, content, mode = self._path_content_state(path)
+            digest = hashlib.sha256(content).hexdigest()
+            mode_text = "" if mode is None else f":{mode:o}"
+            entries[path] = f"{_NON_GIT_STATUS_PREFIX}{kind}:{digest}{mode_text}"
+        return entries
 
-    def _path_content_state(self, path: str) -> Tuple[str, bytes]:
-        full_path = self.repo_root / path
-        if not full_path.exists():
-            return ("missing", b"")
-        if full_path.is_dir():
-            return ("dir", b"")
+    def _is_internal_run_path(self, path: Path) -> bool:
         try:
-            return ("file", full_path.read_bytes())
-        except OSError:
-            return ("unreadable", b"")
+            path.relative_to(self.run_dir.path)
+            return True
+        except ValueError:
+            return False
 
-    def _repo_baseline_content_snapshot(self, status_entries: Dict[str, str]) -> Dict[str, Tuple[str, bytes]]:
-        snapshot: Dict[str, Tuple[str, bytes]] = {}
+    def _non_git_status_snapshot(self) -> Dict[str, str]:
+        entries: Dict[str, str] = {}
+        for current_root, dir_names, file_names in os.walk(self.repo_root, topdown=True, followlinks=False):
+            root_path = Path(current_root)
+            kept_dirs = []
+            for dir_name in dir_names:
+                dir_path = root_path / dir_name
+                if dir_name == ".git" or self._is_internal_run_path(dir_path):
+                    continue
+                kept_dirs.append(dir_name)
+                rel_dir = dir_path.relative_to(self.repo_root).as_posix()
+                entries[rel_dir] = f"{_NON_GIT_STATUS_PREFIX}dir"
+            dir_names[:] = kept_dirs
+
+            for file_name in file_names:
+                file_path = root_path / file_name
+                if self._is_internal_run_path(file_path):
+                    continue
+                rel_file = file_path.relative_to(self.repo_root).as_posix()
+                try:
+                    if file_path.is_symlink():
+                        target = os.readlink(file_path).encode("utf-8", errors="surrogateescape")
+                        digest = hashlib.sha256(target).hexdigest()
+                        entries[rel_file] = f"{_NON_GIT_STATUS_PREFIX}symlink:{digest}"
+                        continue
+                    if not file_path.is_file():
+                        entries[rel_file] = f"{_NON_GIT_STATUS_PREFIX}other"
+                        continue
+                    digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                    entries[rel_file] = f"{_NON_GIT_STATUS_PREFIX}file:{digest}"
+                except OSError:
+                    entries[rel_file] = f"{_NON_GIT_STATUS_PREFIX}unreadable"
+        return entries
+
+    def _path_content_state(self, path: str) -> PathContentState:
+        full_path = self.repo_root / path
+        if not os.path.lexists(full_path):
+            return ("missing", b"", None)
+        try:
+            mode = os.stat(full_path, follow_symlinks=False).st_mode & 0o7777
+        except OSError:
+            mode = None
+        if full_path.is_symlink():
+            try:
+                return ("symlink", os.readlink(full_path).encode("utf-8", errors="surrogateescape"), mode)
+            except OSError:
+                return ("unreadable", b"", mode)
+        if full_path.is_dir():
+            return ("dir", b"", mode)
+        try:
+            return ("file", full_path.read_bytes(), mode)
+        except OSError:
+            return ("unreadable", b"", mode)
+
+    def _git_tracked_paths(self) -> List[str]:
+        try:
+            proc = subprocess.run(
+                [git_command(), "ls-files", "-z"],
+                cwd=self.repo_root,
+                check=False,
+                capture_output=True,
+                text=False,
+                env=internal_subprocess_env(),
+            )
+        except FileNotFoundError:
+            return []
+        if proc.returncode != 0:
+            return []
+        return [
+            raw.decode("utf-8", errors="surrogateescape")
+            for raw in proc.stdout.split(b"\0")
+            if raw
+        ]
+
+    def _repo_baseline_content_snapshot(self, status_entries: Dict[str, str]) -> Dict[str, PathContentState]:
+        snapshot: Dict[str, PathContentState] = {}
+        for current_root, dir_names, _ in os.walk(self.repo_root, topdown=True, followlinks=False):
+            root_path = Path(current_root)
+            kept_dirs = []
+            for dir_name in dir_names:
+                dir_path = root_path / dir_name
+                if dir_name == ".git" or self._is_internal_run_path(dir_path):
+                    continue
+                kept_dirs.append(dir_name)
+                rel_dir = dir_path.relative_to(self.repo_root).as_posix()
+                snapshot[rel_dir] = self._path_content_state(rel_dir)
+            dir_names[:] = kept_dirs
+        for tracked_path in self._git_tracked_paths():
+            snapshot[tracked_path] = self._path_content_state(tracked_path)
         for status_path in status_entries:
             old_path, new_path = self._split_status_path(status_path)
             snapshot[old_path] = self._path_content_state(old_path)
@@ -500,7 +738,7 @@ class WorkflowEngine:
                 snapshot[new_path] = self._path_content_state(new_path)
         return snapshot
 
-    def _repo_content_snapshot_for_paths(self, paths: Iterable[str]) -> Dict[str, Tuple[str, bytes]]:
+    def _repo_content_snapshot_for_paths(self, paths: Iterable[str]) -> Dict[str, PathContentState]:
         return {path: self._path_content_state(path) for path in paths}
 
     @staticmethod
@@ -513,14 +751,27 @@ class WorkflowEngine:
             return True
         return False
 
+    @staticmethod
+    def _is_non_git_status(status: Optional[str]) -> bool:
+        return bool(status and status.startswith(_NON_GIT_STATUS_PREFIX))
+
+    def _is_created_path_status(self, before_status: Optional[str], after_status: Optional[str]) -> bool:
+        if after_status is None:
+            return False
+        if self._is_create_only_status(after_status):
+            return before_status is None or self._is_create_only_status(before_status)
+        if self._is_non_git_status(after_status):
+            return before_status is None
+        return False
+
     def _classify_repo_delta(
         self,
         before: Dict[str, str],
         after: Dict[str, str],
         *,
         allow_creates: bool,
-        before_contents: Optional[Dict[str, Tuple[str, bytes]]] = None,
-        after_contents: Optional[Dict[str, Tuple[str, bytes]]] = None,
+        before_contents: Optional[Dict[str, PathContentState]] = None,
+        after_contents: Optional[Dict[str, PathContentState]] = None,
     ) -> Tuple[List[str], List[str], List[str]]:
         before_contents = before_contents or {}
         after_contents = after_contents or {}
@@ -528,7 +779,7 @@ class WorkflowEngine:
         content_changed = {
             path
             for path, before_content in before_contents.items()
-            if before_content != after_contents.get(path, ("missing", b""))
+            if before_content != after_contents.get(path, ("missing", b"", None))
         }
         changed = sorted(status_changed | content_changed)
         allowed: List[str] = []
@@ -539,12 +790,22 @@ class WorkflowEngine:
                 continue
             before_status = before.get(path)
             after_status = after.get(path)
-            if allow_creates and self._is_create_only_status(after_status):
-                if before_status is None or self._is_create_only_status(before_status):
-                    allowed.append(path)
-                    continue
+            if allow_creates and self._is_created_path_status(before_status, after_status):
+                allowed.append(path)
+                continue
             denied.append(path)
         return changed, allowed, denied
+
+    @staticmethod
+    def _display_status_path(path: str) -> str:
+        old_path, new_path = WorkflowEngine._split_status_path(path)
+        if new_path:
+            return f"{old_path} -> {new_path}"
+        return old_path
+
+    @staticmethod
+    def _display_status_paths(paths: Iterable[str]) -> List[str]:
+        return [WorkflowEngine._display_status_path(path) for path in paths]
 
     def _prepare_agent_command(self, agent: AgentConfig, command: List[str]) -> List[str]:
         if agent.adapter.lower() == "codex" or (command and Path(command[0]).name == "codex"):
@@ -554,10 +815,19 @@ class WorkflowEngine:
     def _apply_subagent_policy_env(self, env_overrides: Dict[str, str]) -> Dict[str, str]:
         out = dict(env_overrides)
         existing_path = out.get("PATH") or os.environ.get("PATH", "")
+        existing_path = path_without_policy_bins(existing_path)
         out["PATH"] = f"{self.policy_bin_dir}{os.pathsep}{existing_path}" if existing_path else str(self.policy_bin_dir)
         out["STRINGBEAN_EXECUTION_PROFILE"] = self.execution_profile
         out["STRINGBEAN_DENIED_COMMANDS"] = ",".join(DENIED_COMMANDS)
         out["STRINGBEAN_DENIED_GIT_SUBCOMMANDS"] = ",".join(DENIED_GIT_SUBCOMMANDS)
+        preload_path = self.policy_bin_dir / POLICY_PRELOAD_NAME
+        out["STRINGBEAN_POLICY_BIN"] = str(self.policy_bin_dir)
+        out["STRINGBEAN_POLICY_WRAPPERS_ACTIVE"] = "1"
+        out["STRINGBEAN_POLICY_PRELOAD_ACTIVE"] = "1" if preload_path.is_file() else "0"
+        if preload_path.is_file():
+            existing_preload = out.get("LD_PRELOAD") or os.environ.get("LD_PRELOAD", "")
+            out["LD_PRELOAD"] = f"{preload_path} {existing_preload}".strip()
+            out["STRINGBEAN_POLICY_PRELOAD"] = str(preload_path)
         return out
 
     def _resolve_modes(self, task: str, global_mode: str, role_modes: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -652,19 +922,6 @@ class WorkflowEngine:
         adapter = self.adapters[agent_name]
         original_agent_name = agent_name
 
-        if agent.prompt_transport not in {"stdin", "argv", "file"}:
-            raise RuntimeError(f"unsupported prompt transport {agent.prompt_transport}")
-        if not adapter.supports_prompt_transport(agent.prompt_transport):
-            raise RuntimeError(f"agent {agent_name} does not support prompt transport {agent.prompt_transport}")
-
-        if track_repo_diff is None:
-            track_repo_diff = self._should_track_repo_diff(agent)
-        baseline = None
-        baseline_contents: Dict[str, Tuple[str, bytes]] = {}
-        if track_repo_diff:
-            baseline = self._repo_status_snapshot()
-            baseline_contents = self._repo_baseline_content_snapshot(baseline)
-
         command = list(adapter.build_command(prompt, self.repo_root))
         if not command:
             raise RuntimeError(f"agent {agent_name} missing command")
@@ -691,6 +948,19 @@ class WorkflowEngine:
             if not adapter.supports_prompt_transport(agent.prompt_transport):
                 raise RuntimeError(f"agent {agent_name} does not support prompt transport {agent.prompt_transport}")
 
+        if agent.prompt_transport not in {"stdin", "argv", "file"}:
+            raise RuntimeError(f"unsupported prompt transport {agent.prompt_transport}")
+        if not adapter.supports_prompt_transport(agent.prompt_transport):
+            raise RuntimeError(f"agent {agent_name} does not support prompt transport {agent.prompt_transport}")
+
+        if track_repo_diff is None:
+            track_repo_diff = self._should_track_repo_diff(agent)
+        baseline = None
+        baseline_contents: Dict[str, PathContentState] = {}
+        if track_repo_diff:
+            baseline = self._repo_status_snapshot()
+            baseline_contents = self._repo_baseline_content_snapshot(baseline)
+
         agent_prompt = prompt
         execution_prompt = policy_prompt(self.execution_profile, self._effective_permission(agent)) + "\n\n" + agent_prompt
 
@@ -710,11 +980,11 @@ class WorkflowEngine:
         if extra_env:
             env_overrides.update(extra_env)
         env_overrides = self._apply_subagent_policy_env(env_overrides)
+        env = merged_environment(env_overrides)
         if self.config.output.redact_environment_values:
-            env = sanitize_environment(env_overrides)
+            redaction_values = environment_redaction_values(env)
         else:
-            env = dict(os.environ)
-            env.update(env_overrides)
+            redaction_values = []
 
         stream_agent_output = bool(self.config.output.stream_agent_output and not self.quiet)
         if stream_agent_output:
@@ -728,6 +998,8 @@ class WorkflowEngine:
             if self.codex_progress
             else None
         )
+        previous_redaction_values = self._agent_output_redaction_values
+        self._agent_output_redaction_values = redaction_values
         try:
             result = await run_subprocess(
                 RunnerConfig(
@@ -756,6 +1028,8 @@ class WorkflowEngine:
             if self.codex_progress:
                 self._progress(f"Agent: {role} {agent_name} failed to execute: {self._shorten_text(exc)}")
             raise RuntimeError(f"agent {agent_name} execution failed: {exc}") from exc
+        finally:
+            self._agent_output_redaction_values = previous_redaction_values
         if stream_agent_output:
             self._flush_agent_stream()
             self._log(f"[stringbean] finished {role} agent: {agent_name} (exit {result.exit_code})")
@@ -772,11 +1046,18 @@ class WorkflowEngine:
         else:
             parsed, raw_payload, parse_error = parse_structured_output(result.raw_stdout, expected)
             model_payload = parsed.model_dump(mode="json") if parsed is not None else None
+        stored_stdout = redact_environment_text(result.raw_stdout, redaction_values) if redaction_values else result.raw_stdout
+        stored_stderr = redact_environment_text(result.raw_stderr, redaction_values) if redaction_values else result.raw_stderr
+        stored_payload = (
+            redact_environment_payload(model_payload, redaction_values)
+            if model_payload is not None and redaction_values
+            else model_payload
+        )
         if self.codex_progress:
             if parse_error:
                 self._progress(f"Progress: {role} result could not be accepted — {self._shorten_text(parse_error)}")
-            elif model_payload:
-                self._progress_payload(role, model_payload)
+            elif stored_payload:
+                self._progress_payload(role, stored_payload)
 
         call_result = AgentCallResult(
             agent_name=agent_name,
@@ -787,9 +1068,9 @@ class WorkflowEngine:
             duration_seconds=result.duration_seconds,
             start_time=result.start_time,
             end_time=result.end_time,
-            raw_stdout=result.raw_stdout,
-            raw_stderr=result.raw_stderr,
-            parsed_output=model_payload,
+            raw_stdout=stored_stdout,
+            raw_stderr=stored_stderr,
+            parsed_output=stored_payload,
             parse_error=parse_error,
             diff_delta_files=None,
             metadata={},
@@ -800,32 +1081,43 @@ class WorkflowEngine:
         if track_repo_diff and baseline is not None:
             after = self._repo_status_snapshot()
             after_contents = self._repo_content_snapshot_for_paths(baseline_contents)
-            changed_paths, allowed_paths, denied_paths = self._classify_repo_delta(
+            changed_path_keys, allowed_path_keys, denied_path_keys = self._classify_repo_delta(
                 baseline,
                 after,
                 allow_creates=self.execution_profile == "ro",
                 before_contents=baseline_contents,
                 after_contents=after_contents,
             )
+            changed_paths = self._display_status_paths(changed_path_keys)
+            allowed_paths = self._display_status_paths(allowed_path_keys)
+            denied_paths = self._display_status_paths(denied_path_keys)
             call_result.diff_delta_files = changed_paths
             call_result.metadata["allowed_create_paths"] = allowed_paths
             call_result.metadata["denied_change_paths"] = denied_paths
             if denied_paths:
-                self._rollback_read_only_changes(changed_paths, baseline, after, baseline_contents)
+                self._rollback_read_only_changes(changed_path_keys, baseline, after, baseline_contents)
                 parse_error = self._policy_violation_message(agent_name, denied_paths)
                 call_result.parse_error = parse_error
         call_result.metadata.update(
             {
+                "selected_agent": original_agent_name,
+                "effective_agent": agent_name,
+                "requested_profile": self.state.state.execution_profile,
+                "effective_profile": self.execution_profile,
                 "execution_profile": self.execution_profile,
                 "effective_permission": self._effective_permission(agent),
                 "denied_commands": list(DENIED_COMMANDS),
                 "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
+                "policy_bin": str(self.policy_bin_dir),
+                "policy_wrappers_active": self.policy_bin_dir.is_dir(),
+                "policy_preload_path": str(self.policy_bin_dir / POLICY_PRELOAD_NAME),
+                "policy_preload_active": (self.policy_bin_dir / POLICY_PRELOAD_NAME).is_file(),
                 "policy_retry_attempt": policy_retry_attempt,
                 "policy_retry_limit": self.config.workflow.max_policy_violation_retries,
             }
         )
-        if model_payload and parse_error is None:
-            self._remember_agent_response(role, model_payload)
+        if stored_payload and parse_error is None:
+            self._remember_agent_response(role, stored_payload)
 
         self.state.state.call_count += 1
         idx = self._run_dir_index()
@@ -874,16 +1166,16 @@ class WorkflowEngine:
 
     @staticmethod
     def _split_status_path(path: str) -> Tuple[str, Optional[str]]:
-        if " -> " not in path:
+        if _STATUS_RENAME_SEPARATOR not in path:
             return path, None
-        before, after = path.split(" -> ", 1)
+        before, after = path.split(_STATUS_RENAME_SEPARATOR, 1)
         return before, after
 
     def _remove_created_path(self, path: str) -> None:
         full_path = self.repo_root / path.rstrip("/")
-        if not full_path.exists():
+        if not os.path.lexists(full_path):
             return
-        if full_path.is_dir():
+        if full_path.is_dir() and not full_path.is_symlink():
             shutil.rmtree(full_path, ignore_errors=True)
             return
         try:
@@ -891,37 +1183,75 @@ class WorkflowEngine:
         except FileNotFoundError:
             pass
 
-    def _checkout_tracked_path(self, path: str) -> None:
-        subprocess.run(
-            ["git", "checkout", "--", path],
-            cwd=self.repo_root,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+    def _prune_empty_created_parents(self, path: str, before_contents: Dict[str, PathContentState]) -> None:
+        current = (self.repo_root / path.rstrip("/")).parent
+        while current != self.repo_root and current != current.parent:
+            try:
+                rel_path = current.relative_to(self.repo_root).as_posix()
+            except ValueError:
+                return
+            if rel_path in before_contents:
+                return
+            if not os.path.lexists(current):
+                current = current.parent
+                continue
+            if not current.is_dir() or current.is_symlink():
+                return
+            try:
+                current.rmdir()
+            except OSError:
+                return
+            current = current.parent
 
-    def _restore_path_content(self, path: str, content_state: Tuple[str, bytes]) -> None:
-        kind, content = content_state
+    def _remove_created_path_and_empty_parents(
+        self,
+        path: str,
+        before_contents: Dict[str, PathContentState],
+    ) -> None:
+        self._remove_created_path(path)
+        self._prune_empty_created_parents(path, before_contents)
+
+    def _ensure_parent_directory(self, path: Path) -> None:
+        parent = path.parent
+        if os.path.lexists(parent) and not parent.is_dir():
+            self._remove_created_path(parent.relative_to(self.repo_root).as_posix())
+        parent.mkdir(parents=True, exist_ok=True)
+
+    def _restore_path_content(self, path: str, content_state: PathContentState) -> None:
+        kind, content, mode = content_state
         full_path = self.repo_root / path
         if kind == "missing":
             self._remove_created_path(path)
             return
         if kind == "dir":
-            if full_path.exists() and not full_path.is_dir():
+            if os.path.lexists(full_path) and (not full_path.is_dir() or full_path.is_symlink()):
                 self._remove_created_path(path)
+            self._ensure_parent_directory(full_path)
             full_path.mkdir(parents=True, exist_ok=True)
+            if mode is not None:
+                full_path.chmod(mode)
             return
-        if full_path.exists() and full_path.is_dir():
+        if kind == "symlink":
+            if os.path.lexists(full_path):
+                self._remove_created_path(path)
+            self._ensure_parent_directory(full_path)
+            os.symlink(content.decode("utf-8", errors="surrogateescape"), full_path)
+            return
+        if os.path.lexists(full_path) and full_path.is_dir() and not full_path.is_symlink():
             shutil.rmtree(full_path, ignore_errors=True)
-        full_path.parent.mkdir(parents=True, exist_ok=True)
+        elif os.path.lexists(full_path) and (full_path.is_symlink() or not full_path.is_file()):
+            self._remove_created_path(path)
+        self._ensure_parent_directory(full_path)
         full_path.write_bytes(content)
+        if mode is not None:
+            full_path.chmod(mode)
 
     def _rollback_read_only_changes(
         self,
         changed_paths: List[str],
         before: Optional[Dict[str, str]] = None,
         after: Optional[Dict[str, str]] = None,
-        before_contents: Optional[Dict[str, Tuple[str, bytes]]] = None,
+        before_contents: Optional[Dict[str, PathContentState]] = None,
     ) -> None:
         before = before or {}
         after = after or {}
@@ -935,35 +1265,26 @@ class WorkflowEngine:
                 self._restore_path_content(path, before_contents[path])
                 continue
 
-            if self._is_create_only_status(after_status) and before_status is None:
-                self._remove_created_path(new_path or old_path)
+            if self._is_created_path_status(before_status, after_status):
+                self._remove_created_path_and_empty_parents(new_path or old_path, before_contents)
                 continue
 
             if new_path:
-                self._checkout_tracked_path(old_path)
-                self._remove_created_path(new_path)
+                if old_path in before_contents:
+                    self._restore_path_content(old_path, before_contents[old_path])
+                if new_path in before_contents:
+                    self._restore_path_content(new_path, before_contents[new_path])
+                else:
+                    self._remove_created_path_and_empty_parents(new_path, before_contents)
+                continue
+
+            if old_path in before_contents:
+                self._restore_path_content(old_path, before_contents[old_path])
                 continue
 
             full_path = self.repo_root / old_path
-            try:
-                tracked = (
-                    subprocess.run(
-                        ["git", "ls-files", "--error-unmatch", old_path],
-                        cwd=self.repo_root,
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                    ).returncode
-                    == 0
-                )
-            except FileNotFoundError:
-                tracked = False
-
-            if tracked:
-                self._checkout_tracked_path(old_path)
-                continue
-            if full_path.exists() and self._is_create_only_status(after_status):
-                self._remove_created_path(old_path)
+            if os.path.lexists(full_path) and self._is_created_path_status(before_status, after_status):
+                self._remove_created_path_and_empty_parents(old_path, before_contents)
 
     async def _ensure_plan(self, task: str, orchestrator: str) -> OrchestratorPlan:
         if self.run_dir.plan_path.exists():
@@ -1222,16 +1543,6 @@ class WorkflowEngine:
         if self.state.state.completed and self.state.state.status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
             return {"status": self.state.state.status.value, "message": "run already completed"}
 
-        dirty_status = git_status_short(self.repo_root)
-        if dirty_status.strip():
-            self._mark(RunStatus.RECEIVED, "dirty-repo", {"status": dirty_status})
-            if self.config.repository.require_clean_start:
-                self.state.state.last_error = "repository has uncommitted changes"
-                self.state.state.mark(RunStatus.FAILED, datetime.now(timezone.utc))
-                self.state.write()
-                return {"status": RunStatus.FAILED.value, "error": self.state.state.last_error}
-            self._log("Warning: repository has uncommitted changes. Proceeding anyway.")
-
         max_rounds = self.config.workflow.max_review_rounds if max_review_rounds is None else max_review_rounds
         resolved_modes = self._resolve_modes(task, global_mode, role_modes)
         orchestrator = self._agent_for_role("orchestrator", mode=resolved_modes["orchestrator"])
@@ -1247,7 +1558,7 @@ class WorkflowEngine:
             )
         )
 
-        self.state.state.selected_agents = {
+        selected_agents = {
             "orchestrator": orchestrator,
             "advisor": advisor or "",
             "implementer": implementer,
@@ -1255,27 +1566,26 @@ class WorkflowEngine:
         }
         selected_preview = ", ".join(
             f"{role}={agent_name or 'none'}"
-            for role, agent_name in self.state.state.selected_agents.items()
+            for role, agent_name in selected_agents.items()
         )
         mode_preview = ", ".join(
             f"{role}={self._agent_mode(agent_name) or resolved_modes[role]}"
-            for role, agent_name in self.state.state.selected_agents.items()
+            for role, agent_name in selected_agents.items()
             if agent_name
         )
         self._progress(
             f"Progress: Selected agents — {selected_preview}; modes: {mode_preview}; profile={self.execution_profile}."
         )
 
-        self.state.state.task = task
-        self.state.state.execution_profile = self.execution_profile
-        self.run_dir.task_path.write_text(task, encoding="utf-8")
-        self.state.write()
+        dirty_status = git_status_short(self.repo_root)
+        repository_dirty = bool(dirty_status.strip())
+        clean_start_blocked = repository_dirty and self.config.repository.require_clean_start
 
         if dry_run:
             plan_exists = self.run_dir.plan_path.exists()
             dry_run_commands = {}
             dry_run_permissions = {}
-            for role_name, name in self.state.state.selected_agents.items():
+            for role_name, name in selected_agents.items():
                 if not name:
                     continue
                 agent = self.config.agents[name]
@@ -1290,7 +1600,7 @@ class WorkflowEngine:
 
             return {
                 "dry_run": True,
-                "selected_agents": self.state.state.selected_agents,
+                "selected_agents": selected_agents,
                 "selected_modes": resolved_modes,
                 "execution_profile": self.execution_profile,
                 "stages": [
@@ -1306,7 +1616,27 @@ class WorkflowEngine:
                 "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
                 "state_dir": str(self.run_dir.path),
                 "plan_exists": plan_exists,
+                "repo_status": dirty_status,
+                "repository_dirty": repository_dirty,
+                "require_clean_start": self.config.repository.require_clean_start,
+                "would_fail": clean_start_blocked,
+                "failure_reason": "repository has uncommitted changes" if clean_start_blocked else None,
             }
+
+        if repository_dirty:
+            self._mark(RunStatus.RECEIVED, "dirty-repo", {"status": dirty_status})
+            if self.config.repository.require_clean_start:
+                self.state.state.last_error = "repository has uncommitted changes"
+                self.state.state.mark(RunStatus.FAILED, datetime.now(timezone.utc))
+                self.state.write()
+                return {"status": RunStatus.FAILED.value, "error": self.state.state.last_error}
+            self._log("Warning: repository has uncommitted changes. Proceeding anyway.")
+
+        self.state.state.selected_agents = selected_agents
+        self.state.state.task = task
+        self.state.state.execution_profile = self.execution_profile
+        self.run_dir.task_path.write_text(task, encoding="utf-8")
+        self.state.write()
 
         if not self.config_snapshot_written:
             from .config import FileResourceMixin
