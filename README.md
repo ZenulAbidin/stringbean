@@ -213,7 +213,7 @@ $sbx fix typo in README --mode high
 
 If Codex displays the plugin-qualified skill name, choose `stringbean:sbx`.
 
-`--plugin-full-output` is intentionally verbose for agent-plugin use. Use `--codex-final` when compact sanitized output is preferred, `--no-codex-progress` for fewer progress lines, or `--codex-progress-interval 10` to make long-running heartbeat lines more frequent.
+`--plugin-full-output` is intentionally verbose for agent-plugin use. Plugin runs emit an immediate command-accepted line and five-second heartbeats by default so Codex, Grok, and Claude do not mistake an active provider call for a stalled command. Use `--codex-final` when compact sanitized output is preferred, `--no-codex-progress` for fewer progress lines, or `--codex-progress-interval N` to choose a different heartbeat interval.
 
 Codex plugins are installed from this repo's local marketplace at `.agents/plugins/marketplace.json`.
 
@@ -420,10 +420,12 @@ Preset B (Fable architecture, external implementer):
 - implementer: Grok
 - reviewer: Codex
 
-Preset C (dry-run/status smoke-test fallback):
+Preset C (Grok Build only):
 
-- same role set reused for a local `cat` fallback command
-- intended for config/status smoke tests only; real runs reject this preset because it cannot return structured agent JSON
+- orchestrator, advisor, implementer, and reviewer all use the real `grok-build` model
+- low, medium, and high reasoning profiles are available for automatic task routing
+- useful when Grok is the only installed provider CLI
+- Grok runs use newline-delimited streaming events; hidden thought events are filtered, provider launches and five-second status remain visible, and final text is reconstructed before schema validation
 
 Preset D (fine-grained model mix):
 

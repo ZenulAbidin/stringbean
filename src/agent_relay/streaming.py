@@ -26,6 +26,7 @@ class LiveStreamFormatter:
         self._suppress_next_token_count = False
         self._json_buffer: list[str] | None = None
         self._fenced_json_buffer: list[str] | None = None
+        self._streaming_text_chunks: list[str] = []
         self._recent_output: list[str] = []
         self._lock = Lock()
 
@@ -37,14 +38,16 @@ class LiveStreamFormatter:
             self._buffer += text
             self._drain_complete_lines()
 
-    def flush(self) -> None:
+    def flush(self, *, final: bool = True) -> None:
         with self._lock:
-            self._flush_json_buffers()
-            if not self._buffer:
+            if not final:
                 return
-            line = self._buffer
-            self._buffer = ""
-            self._emit(line)
+            if self._buffer:
+                line = self._buffer
+                self._buffer = ""
+                self._emit(line)
+            self._flush_json_buffers()
+            self._flush_streaming_text()
 
     def _drain_complete_lines(self) -> None:
         while "\n" in self._buffer:
@@ -67,6 +70,17 @@ class LiveStreamFormatter:
 
     def _format_stateful_line(self, line: str) -> list[str]:
         stripped = line.strip()
+
+        streaming_event = _parse_json_object(stripped) if stripped.startswith("{") else None
+        if streaming_event is not None:
+            event_type = str(streaming_event.get("type") or "").strip().lower()
+            if event_type == "text" and isinstance(streaming_event.get("data"), str):
+                self._streaming_text_chunks.append(streaming_event["data"])
+                return []
+            if event_type == "thought":
+                return []
+            if event_type == "end":
+                return self._take_streaming_text()
 
         if self._suppress_next_token_count:
             self._suppress_next_token_count = False
@@ -164,6 +178,26 @@ class LiveStreamFormatter:
             for formatted in format_json_text(payload):
                 self._write_line(formatted)
 
+    def _take_streaming_text(self) -> list[str]:
+        if not self._streaming_text_chunks:
+            return []
+        text = "".join(self._streaming_text_chunks).strip()
+        self._streaming_text_chunks = []
+        if not text:
+            return []
+        fenced = re.fullmatch(r"```(?:json|jsonc)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+        if fenced:
+            text = fenced.group(1).strip()
+        try:
+            value = json.loads(text)
+        except Exception:
+            return [f"assistant: {_shorten_line(line)}" for line in text.splitlines() if line.strip()]
+        return list(_format_json_value(value))
+
+    def _flush_streaming_text(self) -> None:
+        for formatted in self._take_streaming_text():
+            self._write_line(formatted)
+
 
 def format_stream_line(line: str) -> list[str]:
     """Format a single provider output line for the live console stream."""
@@ -226,6 +260,10 @@ def _format_json_event(event: dict[str, Any]) -> Iterable[str]:
 
     if text:
         lines = _split_formatted_lines(decode_visible_escapes(text))
+        if label == "Tool Call":
+            lines = lines[:1]
+        elif label == "Executed":
+            lines = lines[:3]
         if label:
             for part in lines:
                 yield f"{label}: {part}" if part else label
@@ -329,18 +367,23 @@ def _event_label(event_type: str) -> str:
     labels = {
         "agent_message": "assistant",
         "assistant_message": "assistant",
+        "text": "assistant",
         "message": "message",
         "reasoning": "reasoning",
         "reasoning_summary": "reasoning",
-        "tool_call": "tool",
-        "function_call": "tool",
-        "exec_command": "tool",
-        "exec_command_begin": "tool",
-        "exec_command_output": "tool output",
-        "tool_result": "tool output",
+        "tool_call": "Tool Call",
+        "tool_use": "Tool Call",
+        "tool_start": "Tool Call",
+        "function_call": "Tool Call",
+        "exec_command": "Tool Call",
+        "exec_command_begin": "Tool Call",
+        "exec_command_output": "Executed",
+        "tool_result": "Executed",
+        "tool_end": "Executed",
         "error": "error",
         "session_config": "session",
         "token_count": "tokens",
+        "end": "complete",
     }
     return labels.get(normalized, event_type)
 
@@ -350,6 +393,7 @@ def _is_reasoning_event(event: dict[str, Any]) -> bool:
     normalized = event_type.replace("-", "_").replace(".", "_").lower()
     if (
         "reasoning" in normalized
+        or "thought" in normalized
         or "chain_of_thought" in normalized
         or "scratchpad" in normalized
     ):

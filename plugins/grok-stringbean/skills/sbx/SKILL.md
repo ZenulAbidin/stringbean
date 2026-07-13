@@ -34,6 +34,9 @@ sbx "<task and flags>" --plugin-full-output
 
 4. Show useful live Stringbean output while the command runs. Lines beginning with
    `STRINGBEAN_INTERMEDIATE:` are live progress only, not final output.
+   Give `run_terminal_command` at least 1,800 seconds when a timeout can be supplied.
+   If it returns a running command/session, poll every 5-10 seconds. Do not kill or replace
+   the command while fresh five-second heartbeat or agent-output lines continue to arrive.
 5. After completion, read the final result between:
 
 ```text
@@ -50,6 +53,10 @@ STRINGBEAN_RESULT_END
 
 6. The visible final answer should report the useful fields from that result block, especially
    `Status`, `Result`, `Error`, `Tasks`, `Review rounds`, and `Artifacts`.
+
+Grok provider calls use `streaming-json` internally. Stringbean filters hidden thoughts,
+prints an explicit command line for each provider subprocess plus five-second status updates,
+and reconstructs the final model text for schema validation.
 
 ## Output rules
 

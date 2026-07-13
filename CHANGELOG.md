@@ -2,7 +2,10 @@
 
 ## [Unreleased]
 
-- Nothing yet.
+### Fixed
+
+- Preset C now generates real Grok Build agents at low, medium, and high reasoning levels instead of unusable `cat` placeholder agents.
+- Agent-plugin runs now emit every provider-process launch plus five-second keepalives, and Grok calls stream safely without exposing hidden thought events.
 
 ## [0.1.0] - 2026-07-13
 

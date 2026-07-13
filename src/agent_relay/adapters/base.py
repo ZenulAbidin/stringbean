@@ -40,6 +40,14 @@ class Adapter(ABC):
     def supports_prompt_transport(self, transport: str) -> bool:
         raise NotImplementedError
 
+    def normalize_stdout(self, stdout: str) -> str:
+        """Return provider response text suitable for structured parsing."""
+        return stdout
+
+    def uses_structured_stream(self, command: List[str]) -> bool:
+        """Whether live stdout is an event stream that must be formatted."""
+        return False
+
 
 class CommandAdapterMixin(Adapter, ABC):
     default_executable: Optional[str] = None

@@ -29,6 +29,9 @@ plugins/stringbean/scripts/sbx-codex "<task and flags>"
    `rw`; use `--ro` only when the user explicitly asks for create-only/read-only behavior.
 5. Show useful live Stringbean output while the command runs. Lines beginning with
    `STRINGBEAN_INTERMEDIATE:` are progress/status lines only, not final output.
+   Use a terminal timeout of at least 1,800 seconds when the tool supports one. If the
+   terminal yields a running session, poll it every 5-10 seconds and do not terminate it
+   while fresh Stringbean heartbeat or agent-output lines continue to arrive.
 6. After the command finishes, find the final block between:
 
 ```text
@@ -55,6 +58,10 @@ STRINGBEAN_INTERMEDIATE: Progress: ...
 STRINGBEAN_INTERMEDIATE: Agent: ...
 STRINGBEAN_INTERMEDIATE: Agent output: ...
 ```
+
+Plugin wrappers request a heartbeat every five seconds by default. A live heartbeat means
+the command is active, even when the provider is still waiting for its next model response.
+Each provider subprocess launch also emits an explicit `STRINGBEAN_INTERMEDIATE: Command:` line.
 
 Use those lines for brief user-facing updates if the run takes time. These lines are already
 sanitized: they describe phases, selected agents, parsed summaries, verdicts, bounded

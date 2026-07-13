@@ -265,9 +265,9 @@ class WorkflowEngine:
             self._agent_stream_formatter = LiveStreamFormatter(write_line)
         return self._agent_stream_formatter
 
-    def _flush_agent_stream(self) -> None:
+    def _flush_agent_stream(self, *, final: bool = True) -> None:
         if self._agent_stream_formatter is not None:
-            self._agent_stream_formatter.flush()
+            self._agent_stream_formatter.flush(final=final)
 
     def _stream_agent_chunk(self, chunk: str) -> None:
         if not chunk:
@@ -314,7 +314,7 @@ class WorkflowEngine:
     def _progress(self, message: str) -> None:
         if not self.codex_progress:
             return
-        self._flush_agent_stream()
+        self._flush_agent_stream(final=False)
         if self._agent_stream_open_line:
             print("", flush=True)
             self._agent_stream_open_line = False
@@ -1236,15 +1236,25 @@ class WorkflowEngine:
 
         stream_agent_output = bool(self.config.output.stream_agent_output and not self.quiet)
         codex_agent_output = bool(self.codex_progress and not stream_agent_output)
-        if stream_agent_output and self.raw_agent_output:
+        structured_provider_stream = adapter.uses_structured_stream(command)
+        if stream_agent_output and self.raw_agent_output and not structured_provider_stream:
             self._log(f"[stringbean] starting {role} agent: {agent_name}")
         elif stream_agent_output:
-            self._agent_stream_formatter = LiveStreamFormatter(self._write_agent_stream_line)
+            stream_writer = (
+                self._write_codex_agent_stream_line
+                if self.codex_progress
+                else self._write_agent_stream_line
+            )
+            self._agent_stream_formatter = LiveStreamFormatter(stream_writer)
             self._log(f"[stringbean] starting {role} agent: {agent_name}")
         elif codex_agent_output:
             self._agent_stream_formatter = LiveStreamFormatter(self._write_codex_agent_stream_line)
         if self.codex_progress:
             self._progress_agent_start(role, agent_name, agent)
+            self._progress(
+                f"Command: launching {Path(command[0]).name} for {role} {agent_name} "
+                f"(timeout={agent.timeout_seconds}s, heartbeat={self.progress_interval_seconds:g}s)."
+            )
         should_stream_agent_output = stream_agent_output or codex_agent_output
         callback = self._stream_agent_chunk if should_stream_agent_output else None
         progress_callback = (
@@ -1254,7 +1264,11 @@ class WorkflowEngine:
         )
         previous_redaction_values = self._agent_output_redaction_values
         self._agent_output_redaction_values = redaction_values
-        callback = self._stream_raw_agent_chunk if self.raw_agent_output and stream_agent_output else callback
+        callback = (
+            self._stream_raw_agent_chunk
+            if self.raw_agent_output and stream_agent_output and not structured_provider_stream
+            else callback
+        )
         try:
             result = await run_subprocess(
                 RunnerConfig(
@@ -1305,7 +1319,8 @@ class WorkflowEngine:
         if result.exit_code not in {0, None}:
             parse_error = f"agent exited with status {result.exit_code}"
         else:
-            parsed, raw_payload, parse_error = parse_structured_output(result.raw_stdout, expected)
+            parse_stdout = adapter.normalize_stdout(result.raw_stdout)
+            parsed, raw_payload, parse_error = parse_structured_output(parse_stdout, expected)
             model_payload = parsed.model_dump(mode="json") if parsed is not None else None
         stored_stdout = redact_environment_text(result.raw_stdout, redaction_values) if redaction_values else result.raw_stdout
         stored_stderr = redact_environment_text(result.raw_stderr, redaction_values) if redaction_values else result.raw_stderr

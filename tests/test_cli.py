@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 
@@ -13,6 +14,29 @@ from agent_relay.state import create_new_run
 
 
 runner = CliRunner()
+
+
+def _write_placeholder_config(root: Path) -> None:
+    config = cli.Config(
+        agents={
+            "placeholder": cli.AgentConfig(
+                name="placeholder",
+                adapter="generic",
+                model="local-fallback",
+                role="orchestrator",
+                permissions="read_write",
+                command=["cat"],
+                prompt_transport="stdin",
+            )
+        },
+        workflow=cli.WorkflowConfig(
+            orchestrator="placeholder",
+            max_review_rounds=0,
+        ),
+        repository=cli.RepositoryConfig(require_git=False),
+        output=cli.OutputConfig(),
+    )
+    cli.save_config(config, root / ".stringbean" / "config.yaml")
 
 
 def test_cli_help_available():
@@ -162,6 +186,7 @@ def test_sbx_plugin_full_output_emits_normal_output_and_sentinel_block():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert "STRINGBEAN_INTERMEDIATE: Command: sbx accepted" in result.stdout
     assert "Run ID:" in result.stdout
     assert "Dry run mode - no agents were launched." in result.stdout
     assert "STRINGBEAN_FINAL_START" in result.stdout
@@ -226,10 +251,55 @@ def test_claude_plugin_sbx_wrapper_emits_sentinel_block():
     assert "STRINGBEAN_FINAL_END" in result.stdout
 
 
-def test_run_rejects_local_fallback_cat_config_before_launch(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "plugins/stringbean/scripts/sbx-codex",
+        "plugins/grok-stringbean/scripts/sbx-grok",
+        "plugins/claude-stringbean/scripts/sbx-claude",
+    ],
+)
+def test_plugin_wrappers_add_full_output_and_five_second_heartbeat(tmp_path: Path, wrapper: str):
+    repo = Path(__file__).resolve().parents[1]
+    fake_sbx = tmp_path / "fake-sbx"
+    fake_sbx.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
+    fake_sbx.chmod(0o755)
+
+    result = subprocess.run(
+        [str(repo / wrapper), "inspect", "repo"],
+        cwd=repo,
+        env={**os.environ, "STRINGBEAN_SBX": str(fake_sbx)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    args = result.stdout.splitlines()
+    assert result.returncode == 0, result.stderr
+    assert args[:2] == ["inspect", "repo"]
+    assert "--plugin-full-output" in args
+    interval_index = args.index("--codex-progress-interval")
+    assert args[interval_index + 1] == "5"
+
+
+def test_preset_c_uses_real_grok_models_instead_of_cat(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     init = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
     assert init.exit_code == 0
+
+    config_path = tmp_path / ".stringbean" / "config.yaml"
+    cfg = cli.load_config(config_path)
+    assert cfg.agents
+    assert all(agent.adapter == "grok" for agent in cfg.agents.values())
+    assert all(agent.model == "grok-build" for agent in cfg.agents.values())
+    assert all(agent.command and agent.command[0] == "grok" for agent in cfg.agents.values())
+    assert not any(cli._is_placeholder_agent(agent) for agent in cfg.agents.values())
+    assert "local-fallback" not in config_path.read_text(encoding="utf-8")
+
+
+def test_run_rejects_manually_configured_placeholder_before_launch(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_placeholder_config(tmp_path)
 
     result = runner.invoke(cli.app, ["run", "real task", "--quiet"])
 
@@ -240,10 +310,9 @@ def test_run_rejects_local_fallback_cat_config_before_launch(tmp_path: Path, mon
     assert not (tmp_path / ".stringbean" / "runs").exists()
 
 
-def test_codex_final_rejects_local_fallback_cat_config_with_sentinel_block(tmp_path: Path, monkeypatch):
+def test_codex_final_rejects_placeholder_config_with_sentinel_block(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    init = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
-    assert init.exit_code == 0
+    _write_placeholder_config(tmp_path)
 
     result = runner.invoke(cli.app, ["run", "real task", "--codex-final"])
 
@@ -258,8 +327,7 @@ def test_codex_final_rejects_local_fallback_cat_config_with_sentinel_block(tmp_p
 
 def test_plugin_full_output_reports_config_failure_but_exits_zero(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    init = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
-    assert init.exit_code == 0
+    _write_placeholder_config(tmp_path)
 
     result = runner.invoke(cli.app, ["run", "real task", "--plugin-full-output"])
 

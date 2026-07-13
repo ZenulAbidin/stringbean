@@ -107,6 +107,16 @@ def _codex_command(model: str, reasoning_effort: str) -> list[str]:
     ]
 
 
+def _grok_command(reasoning_effort: str) -> list[str]:
+    return [
+        "grok",
+        "--model",
+        "grok-build",
+        "--reasoning-effort",
+        reasoning_effort,
+    ]
+
+
 def _capabilities_path(root: Path) -> Path:
     return _agent_relay_root(root) / CLI_CAPABILITIES_FILE
 
@@ -242,48 +252,62 @@ def _preset_config(preset: str) -> Config:
     if preset == "C":
         return Config(
             agents={
-                "solo": AgentConfig(
-                    name="solo",
-                    adapter="generic",
-                    model="local-fallback",
+                "grok-high": AgentConfig(
+                    name="grok-high",
+                    adapter="grok",
+                    model="grok-build",
                     role="orchestrator",
                     permissions="read_write",
-                    command=["cat"],
-                    prompt_transport="stdin",
+                    command=_grok_command("high"),
+                    mode="high",
+                    prompt_transport="argv",
                 ),
-                "solo-advisor": AgentConfig(
-                    name="solo-advisor",
-                    adapter="generic",
-                    model="local-fallback",
+                "grok-medium": AgentConfig(
+                    name="grok-medium",
+                    adapter="grok",
+                    model="grok-build",
                     role="advisor",
                     permissions="read_only",
-                    command=["cat"],
-                    prompt_transport="stdin",
+                    command=_grok_command("medium"),
+                    mode="medium",
+                    prompt_transport="argv",
                 ),
-                "solo-impl": AgentConfig(
-                    name="solo-impl",
-                    adapter="generic",
-                    model="local-fallback",
+                "grok-low-rw": AgentConfig(
+                    name="grok-low-rw",
+                    adapter="grok",
+                    model="grok-build",
                     role="implementer",
                     permissions="read_write",
-                    command=["cat"],
-                    prompt_transport="stdin",
+                    command=_grok_command("low"),
+                    mode="low",
+                    prompt_transport="argv",
                 ),
-                "solo-review": AgentConfig(
-                    name="solo-review",
-                    adapter="generic",
-                    model="local-fallback",
+                "grok-medium-rw": AgentConfig(
+                    name="grok-medium-rw",
+                    adapter="grok",
+                    model="grok-build",
+                    role="implementer",
+                    permissions="read_write",
+                    command=_grok_command("medium"),
+                    mode="medium",
+                    prompt_transport="argv",
+                ),
+                "grok-low": AgentConfig(
+                    name="grok-low",
+                    adapter="grok",
+                    model="grok-build",
                     role="reviewer",
                     permissions="read_only",
-                    command=["cat"],
-                    prompt_transport="stdin",
+                    command=_grok_command("low"),
+                    mode="low",
+                    prompt_transport="argv",
                 ),
             },
             workflow=WorkflowConfig(
-                orchestrator="solo",
-                advisors=["solo-advisor"],
-                implementers=["solo-impl"],
-                reviewers=["solo-review"],
+                orchestrator="grok-high",
+                advisors=["grok-medium", "grok-low"],
+                implementers=["grok-low-rw", "grok-medium-rw", "grok-high"],
+                reviewers=["grok-low", "grok-medium"],
                 advisor_policy="before_implementation",
             ),
             repository=RepositoryConfig(),
@@ -408,7 +432,7 @@ def _preset_config(preset: str) -> Config:
                     model="grok-build",
                     role="implementer",
                     permissions="read_write",
-                    command=["grok", "--model", "grok-build", "--reasoning-effort", "high"],
+                    command=_grok_command("high"),
                     mode="high",
                     prompt_transport="argv",
                 ),
@@ -418,7 +442,7 @@ def _preset_config(preset: str) -> Config:
                     model="grok-build",
                     role="reviewer",
                     permissions="read_only",
-                    command=["grok", "--model", "grok-build", "--reasoning-effort", "low"],
+                    command=_grok_command("low"),
                     mode="low",
                     prompt_transport="argv",
                 ),
@@ -806,8 +830,9 @@ def _validate_real_run_agents(
     formatted = ", ".join(placeholders)
     raise RuntimeError(
         "Configured placeholder agent(s) cannot perform a real run: "
-        f"{formatted}. These preset-C/local-fallback agents only echo prompts and cannot "
-        "return structured review JSON. Reinitialize with `stringbean init --force --preset D` "
+        f"{formatted}. Placeholder/local-fallback agents only echo prompts and cannot "
+        "return structured review JSON. Reinitialize with `stringbean init --force --preset C` "
+        "for a Grok-only configuration, use `--preset D` for the full model catalog, "
         "or run with `--config` pointing at a model-backed Stringbean config."
     )
 
@@ -959,9 +984,9 @@ def run(
         ),
     ),
     codex_progress_interval: float = typer.Option(
-        30.0,
+        5.0,
         "--codex-progress-interval",
-        help="Seconds between still-running heartbeat lines in --codex-final mode.",
+        help="Seconds between still-running heartbeat lines in plugin output modes.",
     ),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
 ):
@@ -970,6 +995,11 @@ def run(
     """
     final_block_output = codex_final or plugin_full_output
     compact_final_output = codex_final and not plugin_full_output
+    if final_block_output:
+        print(
+            "STRINGBEAN_INTERMEDIATE: Command: sbx accepted the request and is preparing the workflow.",
+            flush=True,
+        )
     cfg_path = config or config_path(_project_root())
     cfg = _load_config_for_output(cfg_path, suppress_reserved_warnings=compact_final_output)
 

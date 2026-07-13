@@ -131,6 +131,8 @@ def test_grok_adapter_uses_headless_single_prompt_transport(tmp_path: Path):
         "grok-build",
         "--reasoning-effort",
         "high",
+        "--output-format",
+        "streaming-json",
         "-p",
     ]
 
@@ -149,7 +151,63 @@ def test_grok_adapter_uses_prompt_file_transport(tmp_path: Path):
 
     adapter = GrokAdapter(cfg)
 
-    assert adapter.build_command("prompt", tmp_path) == ["grok", "--model", "grok-build", "--prompt-file"]
+    assert adapter.build_command("prompt", tmp_path) == [
+        "grok",
+        "--model",
+        "grok-build",
+        "--output-format",
+        "streaming-json",
+        "--prompt-file",
+    ]
+
+
+def test_grok_adapter_normalizes_streaming_json_text_for_parser(tmp_path: Path):
+    from agent_relay.adapters import GrokAdapter
+
+    cfg = AgentConfig(
+        name="grok-build",
+        adapter="grok",
+        role="orchestrator",
+        permissions="read_write",
+        command=["grok", "--model", "grok-build"],
+        prompt_transport="argv",
+    )
+    adapter = GrokAdapter(cfg)
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "thought", "data": "hidden scratch text"}),
+            json.dumps({"type": "text", "data": '{"summary":"real model"'}),
+            json.dumps({"type": "text", "data": ',"assumptions":[],"tasks":[],'}),
+            json.dumps({"type": "text", "data": '"risks":[],"advisor_questions":[]}'}),
+            json.dumps({"type": "end", "stopReason": "EndTurn"}),
+        ]
+    )
+
+    normalized = adapter.normalize_stdout(stdout)
+    parsed, _, error = parse_structured_output(normalized, OrchestratorPlan)
+
+    assert error is None
+    assert parsed is not None
+    assert parsed.summary == "real model"
+    assert "hidden scratch text" not in normalized
+
+
+def test_grok_adapter_respects_explicit_non_streaming_output_format(tmp_path: Path):
+    from agent_relay.adapters import GrokAdapter
+
+    cfg = AgentConfig(
+        name="grok-build",
+        adapter="grok",
+        role="reviewer",
+        permissions="read_only",
+        command=["grok", "--output-format", "json"],
+        prompt_transport="argv",
+    )
+    adapter = GrokAdapter(cfg)
+    command = adapter.build_command("prompt", tmp_path)
+
+    assert command == ["grok", "--output-format", "json", "-p"]
+    assert not adapter.uses_structured_stream(command)
 
 
 def test_parser_designated_block_and_fallback(tmp_path: Path):

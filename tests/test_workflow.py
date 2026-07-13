@@ -740,6 +740,75 @@ def test_agent_stream_formats_json_events(tmp_path: Path, capsys):
     assert captured.out == "assistant: hello\nassistant: world\n"
 
 
+def test_agent_stream_formats_grok_events_and_hides_thoughts(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-grok", "Stream Grok", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    engine._stream_agent_chunk('{"type":"thought","data":"private scratch"}\n')
+    engine._stream_agent_chunk('{"type":"tool_call","data":{"command":"ls -1"}}\n')
+    first_text = '{"status":"completed","summary":"repository listed","files_changed":[],'
+    second_text = '"commands_run":["ls -1"],"tests":[],"remaining_issues":[],"handoff_notes":[]}'
+    engine._stream_agent_chunk(json.dumps({"type": "text", "data": first_text}) + "\n")
+    engine._stream_agent_chunk(json.dumps({"type": "text", "data": second_text}) + "\n")
+    engine._stream_agent_chunk('{"type":"end","stopReason":"EndTurn"}\n')
+
+    captured = capsys.readouterr()
+    assert "private scratch" not in captured.out
+    assert "Tool Call: ls -1" in captured.out
+    assert "Result: completed — repository listed" in captured.out
+
+
+def test_json_tool_output_is_capped_at_three_lines(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-tool-cap", "Stream tool", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    event = {
+        "type": "tool_result",
+        "data": "line one\nline two\nline three\nline four must stay hidden",
+    }
+    engine._stream_agent_chunk(json.dumps(event) + "\n")
+
+    captured = capsys.readouterr()
+    assert "Executed: line one" in captured.out
+    assert "Executed: line two" in captured.out
+    assert "Executed: line three" in captured.out
+    assert "line four" not in captured.out
+
+
+def test_grok_partial_events_are_not_flushed_by_progress_heartbeats(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-grok-partial", "Stream Grok", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, codex_progress=True)
+
+    engine._stream_agent_chunk('{"type":"thought","data')
+    engine._progress("Agent: provider still running (5s).")
+    engine._stream_agent_chunk('":"private scratch"}\n')
+    result_text = '{"status":"completed","summary":"safe result"}'
+    event = json.dumps({"type": "text", "data": result_text})
+    engine._stream_agent_chunk(event[:20])
+    engine._progress("Agent: provider still running (10s).")
+    engine._stream_agent_chunk(event[20:] + "\n")
+    engine._stream_agent_chunk('{"type":"end","stopReason":"EndTurn"}\n')
+
+    captured = capsys.readouterr()
+    assert "provider still running (5s)" in captured.out
+    assert "provider still running (10s)" in captured.out
+    assert "private scratch" not in captured.out
+    assert '{"type"' not in captured.out
+    assert "Result: completed — safe result" in captured.out
+
+
 def test_agent_stream_suppresses_prompt_echo(tmp_path: Path, capsys):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")

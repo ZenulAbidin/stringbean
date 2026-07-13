@@ -32,6 +32,10 @@ sbx "$ARGUMENTS" --plugin-full-output
 
 4. Show useful live Stringbean output while the command runs. Lines beginning with
    `STRINGBEAN_INTERMEDIATE:` are live progress only, not final output.
+   Set the Bash timeout to at least 1,800 seconds when available. If the command is yielded
+   as a running process, poll it every 5-10 seconds and do not terminate it while fresh
+   five-second heartbeat or agent-output lines continue to arrive.
+   Each provider subprocess launch is marked with `STRINGBEAN_INTERMEDIATE: Command:`.
 5. After completion, read the final result between:
 
 ```text
