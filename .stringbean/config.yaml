@@ -204,16 +204,16 @@ agents:
     command:
     - grok
     - --model
-    - grok-4.5
+    - grok-build
     - --reasoning-effort
     - high
     environment_overrides: {}
     fallback_agent: null
     mode: high
-    model: grok-4.5
+    model: grok-build
     name: grok-build
     permissions: read_write
-    prompt_transport: stdin
+    prompt_transport: argv
     role: implementer
     timeout_seconds: 1200
     working_directory: .
@@ -222,16 +222,16 @@ agents:
     command:
     - grok
     - --model
-    - grok-4.5
+    - grok-build
     - --reasoning-effort
     - low
     environment_overrides: {}
     fallback_agent: null
     mode: low
-    model: grok-4.5
+    model: grok-build
     name: grok-review
     permissions: read_only
-    prompt_transport: stdin
+    prompt_transport: argv
     role: reviewer
     timeout_seconds: 1200
     working_directory: .

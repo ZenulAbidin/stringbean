@@ -1,23 +1,33 @@
-# Release checklist (v1.0 release prep)
+# Release checklist (v0.1.0 public release)
 
 This project uses a lightweight release flow you can run from a clean local checkout.
 
 ## 1) Pre-release validation
 
 - [ ] Confirm a clean working tree for release contents.
+- [ ] Confirm generated local state is not staged:
+  - `.stringbean/runs/`
+  - `.stringbean/cli-capabilities.json`
+  - `.stringbean-runtime/`
+  - `implemented.txt`
 - [ ] Update metadata:
   - `pyproject.toml` version
+  - `src/agent_relay/__init__.py` `__version__`
+  - `plugins/stringbean/.codex-plugin/plugin.json` version
+  - `plugins/grok-stringbean/.grok-plugin/plugin.json` version
   - `CHANGELOG.md`
 - [ ] Run full tests:
 
   ```bash
-  python3.10 -m pytest -q
+  python -m pytest -q
   ```
 
 - [ ] Verify the CLI still works for core commands:
 
   ```bash
-  PYTHONPATH=src python3.10 -m agent_relay.cli --help  # if using module path directly
+  stringbean --version
+  sbx --help
+  ./plugins/grok-stringbean/scripts/sbx-grok "Quick plugin smoke test" --dry-run
   stringbean init
   stringbean doctor
   stringbean status
@@ -27,15 +37,17 @@ This project uses a lightweight release flow you can run from a clean local chec
 - [ ] Smoke test run path with a small task (from any directory if desired):
 
   ```bash
-  ~/Documents/stringbean/scripts/sbx "Quick smoke test" --mode low
-  ~/Documents/stringbean/scripts/sbx "Quick write smoke test" --rw --mode low
+  ./scripts/sbx "Quick smoke test" --dry-run --mode low
+  sbx "Quick smoke test through installed entrypoint" --dry-run --mode low
+  grok plugin validate plugins/grok-stringbean
   ```
 
 ## 2) Build & package
 
 ```bash
-python3.10 -m pip install build
-python3.10 -m build
+python -m pip install build twine
+python -m build
+python -m twine check dist/*
 ```
 
 Artifacts should appear in `dist/`:
@@ -45,8 +57,13 @@ Artifacts should appear in `dist/`:
 
 ## 3) Create GitHub release
 
-1. Commit release changes with a clear message (`chore: prep vX.Y.Z`).
-2. Tag the commit:
+1. Create the public repo and push the prepared tree:
+
+   ```bash
+   gh repo create stringbean --public --source=. --remote=origin --push
+   ```
+
+2. Tag the release commit:
 
    ```bash
    git tag -a v0.1.0 -m "Release v0.1.0"
@@ -62,9 +79,9 @@ Artifacts should appear in `dist/`:
 ## 4) Optional: publish to PyPI
 
 ```bash
-python3.10 -m pip install twine
-python3.10 -m twine check dist/*
-python3.10 -m twine upload dist/*
+python -m pip install twine
+python -m twine check dist/*
+python -m twine upload dist/*
 ```
 
 ## 5) Post-launch announcements

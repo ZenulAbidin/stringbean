@@ -39,7 +39,7 @@ from .policy import (
     path_without_policy_bins,
     policy_prompt,
 )
-from .runner import RunnerConfig, RunnerOutput, run_subprocess
+from .runner import RunnerConfig, run_subprocess
 from .state import CallStore, RunDirectory, RunEventStore, RunState, now_iso
 from .streaming import LiveStreamFormatter
 from .templates import render_template

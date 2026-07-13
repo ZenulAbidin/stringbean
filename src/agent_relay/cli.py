@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from . import __version__
 from .config import (
     AgentConfig,
     Config,
@@ -41,6 +42,51 @@ console = Console()
 CLI_CAPABILITIES_FILE = "cli-capabilities.json"
 BUILTIN_EXECUTABLES = ("codex", "claude", "grok")
 MODE_CHOICES = {"auto", "high", "medium", "low"}
+SBX_OPTIONS_WITH_VALUE = {
+    "--config",
+    "--orchestrator",
+    "--advisor",
+    "--implementer",
+    "--reviewer",
+    "--mode",
+    "--orchestrator-mode",
+    "--advisor-mode",
+    "--implementer-mode",
+    "--reviewer-mode",
+    "--max-review-rounds",
+    "--policy-retries",
+    "--run-id",
+    "--profile",
+    "--codex-progress-interval",
+}
+SBX_BOOLEAN_OPTIONS = {
+    "--no-advisor",
+    "--dry-run",
+    "--quiet",
+    "--no-agent-stream",
+    "--no-agent-output",
+    "--codex-final",
+    "--plugin-final",
+    "--codex-progress",
+    "--no-codex-progress",
+    "--ro",
+    "-ro",
+    "--rw",
+    "-rw",
+}
+
+
+@app.callback(invoke_without_command=True)
+def cli(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", help="Show the installed stringbean version."),
+) -> None:
+    if version:
+        console.print(f"{PROJECT_NAME} {__version__}")
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
+        raise typer.Exit()
 
 
 def _codex_command(model: str, reasoning_effort: str) -> list[str]:
@@ -107,11 +153,11 @@ def _default_config() -> Config:
             "grok": AgentConfig(
                 name="grok",
                 adapter="grok",
-                model="grok-4.5",
+                model="grok-build",
                 role="implementer",
                 permissions="read_write",
                 command=None,
-                prompt_transport="stdin",
+                prompt_transport="argv",
             ),
             "sol-review": AgentConfig(
                 name="sol-review",
@@ -164,11 +210,11 @@ def _preset_config(preset: str) -> Config:
                 "grok": AgentConfig(
                     name="grok",
                     adapter="grok",
-                    model="grok-4.5",
+                    model="grok-build",
                     role="implementer",
                     permissions="read_write",
                     command=None,
-                    prompt_transport="stdin",
+                    prompt_transport="argv",
                 ),
                 "reviewer": AgentConfig(
                     name="reviewer",
@@ -356,22 +402,22 @@ def _preset_config(preset: str) -> Config:
                 "grok-build": AgentConfig(
                     name="grok-build",
                     adapter="grok",
-                    model="grok-4.5",
+                    model="grok-build",
                     role="implementer",
                     permissions="read_write",
-                    command=["grok", "--model", "grok-4.5", "--reasoning-effort", "high"],
+                    command=["grok", "--model", "grok-build", "--reasoning-effort", "high"],
                     mode="high",
-                    prompt_transport="stdin",
+                    prompt_transport="argv",
                 ),
                 "grok-review": AgentConfig(
                     name="grok-review",
                     adapter="grok",
-                    model="grok-4.5",
+                    model="grok-build",
                     role="reviewer",
                     permissions="read_only",
-                    command=["grok", "--model", "grok-4.5", "--reasoning-effort", "low"],
+                    command=["grok", "--model", "grok-build", "--reasoning-effort", "low"],
                     mode="low",
-                    prompt_transport="stdin",
+                    prompt_transport="argv",
                 ),
             },
             workflow=WorkflowConfig(
@@ -880,7 +926,8 @@ def run(
     codex_final: bool = typer.Option(
         False,
         "--codex-final",
-        help="Emit compact Codex progress plus a sentinel-wrapped final block for Codex prompts/skills.",
+        "--plugin-final",
+        help="Emit compact plugin progress plus a sentinel-wrapped final block for Codex/Grok prompts/skills.",
     ),
     codex_progress: bool = typer.Option(
         True,
@@ -1163,6 +1210,74 @@ def logs(run_id: str = typer.Argument(...)):
 
 def main() -> None:
     app()
+
+
+def _sbx_usage() -> str:
+    return "\n".join(
+        [
+            "Usage:",
+            '  sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [stringbean run flags]',
+            '  sbx "TASK" [--ro|--rw] [--mode auto|low|medium|high] [stringbean run flags]',
+            '  sbx run TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [stringbean run flags]',
+            "",
+            "Examples:",
+            "  sbx inspect the docs --dry-run",
+            '  sbx "Add a typo fix in docs"',
+            '  sbx "Build retry logic" --mode high',
+            '  sbx "Inspect through an agent plugin" --plugin-final',
+        ]
+    )
+
+
+def _split_sbx_args(args: list[str]) -> tuple[str, list[str]]:
+    if args and args[0] in {"sbx", "run", "/sbx"}:
+        args = args[1:]
+
+    task_parts: list[str] = []
+    run_args: list[str] = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        idx += 1
+        if arg == "--":
+            task_parts.extend(args[idx:])
+            break
+        if arg.startswith("--") and "=" in arg:
+            run_args.append(arg)
+            continue
+        if arg in SBX_BOOLEAN_OPTIONS:
+            run_args.append(arg)
+            continue
+        if arg.startswith("-"):
+            run_args.append(arg)
+            if arg in SBX_OPTIONS_WITH_VALUE:
+                if idx >= len(args):
+                    raise typer.BadParameter(f"Option requires a value: {arg}")
+                run_args.append(args[idx])
+                idx += 1
+            continue
+        task_parts.append(arg)
+
+    task = " ".join(task_parts).strip()
+    if not task:
+        raise typer.BadParameter("Task cannot be empty.")
+    return task, run_args
+
+
+def sbx_main() -> None:
+    """Installed console entry point for slash-style Stringbean runs."""
+    args = sys.argv[1:]
+    if not args or args[0] in {"-h", "--help", "help"}:
+        console.print(_sbx_usage())
+        sys.exit(0 if args else 1)
+    try:
+        task, run_args = _split_sbx_args(args)
+    except typer.BadParameter as exc:
+        console.print(str(exc))
+        console.print(_sbx_usage())
+        sys.exit(1)
+    sys.argv = ["stringbean", "run", task, *run_args]
+    main()
 
 
 if __name__ == "__main__":

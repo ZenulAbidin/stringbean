@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +7,16 @@ name = "stringbean"
 version = "0.1.0"
 description = "Local multi-agent coding orchestrator with provider-agnostic subprocess CLIs"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  {name = "Stringbean contributors"}
+]
 keywords = ["agent-orchestration", "LLM", "CLI", "coding-assistant", "workflow"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -31,6 +34,7 @@ dependencies = [
 
 [project.scripts]
 stringbean = "agent_relay.cli:main"
+sbx = "agent_relay.cli:sbx_main"
 
 [project.optional-dependencies]
 dev = [

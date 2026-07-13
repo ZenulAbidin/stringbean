@@ -1,0 +1,10 @@
+{
+  "name": "grok-stringbean",
+  "version": "0.1.0",
+  "description": "Use Stringbean's sbx orchestrator from inside Grok Build.",
+  "author": {
+    "name": "Stringbean"
+  },
+  "license": "MIT",
+  "keywords": ["stringbean", "sbx", "grok", "orchestration", "multi-agent"]
+}

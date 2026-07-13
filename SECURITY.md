@@ -18,6 +18,7 @@ Include:
 - Do not hardcode credentials in config files.
 - Use `permissions` in agent configs carefully for write-capable roles.
 - Review `.stringbean/config.yaml` and `.stringbean/runs/*` before sharing publicly.
+- Do not commit `.stringbean/cli-capabilities.json`; it is machine-local probe output.
 
 ## Scope
 

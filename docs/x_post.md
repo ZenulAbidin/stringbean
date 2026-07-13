@@ -6,7 +6,7 @@
 
 No giant UI. No API-key plumbing. Just filesystem-first state, resumable runs, and inspectable run artifacts.
 
-It now includes a local slash-style launcher (`sbx`) so I can run from terminal quickly from anywhere.
+It now includes a local slash-style launcher (`sbx`) plus Codex and Grok Build plugin wrappers.
 
 Try it: github.com/<your-org>/stringbean
 #codingagents #llm #python #openai #claude #grok

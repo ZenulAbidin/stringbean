@@ -2,6 +2,8 @@
 .stringbean-runtime/
 .pytest_cache/
 .stringbean/runs/
+.stringbean/cli-capabilities.json
+implemented.txt
 __pycache__/
 *.py[cod]
 *$py.class

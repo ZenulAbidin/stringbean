@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import subprocess
+import sys
 
+import pytest
 from typer.testing import CliRunner
 
 from agent_relay import cli
@@ -18,6 +20,12 @@ def test_cli_help_available():
     assert result.exit_code == 0
     assert "stringbean" in result.stdout
     assert "agent" + "-relay" not in result.stdout
+
+
+def test_cli_version_available():
+    result = runner.invoke(cli.app, ["--version"])
+    assert result.exit_code == 0
+    assert "stringbean 0.1.0" in result.stdout
 
 
 def test_run_help_lists_agent_stream_switch():
@@ -46,6 +54,26 @@ def test_sbx_accepts_unquoted_prompt_words():
     assert "enumerate-bugs" in result.stdout
     assert "'dry_run': True" in result.stdout
     assert "'execution_profile': 'rw'" in result.stdout
+
+
+def test_installed_sbx_entrypoint_accepts_unquoted_prompt_words(monkeypatch):
+    captured: list[list[str]] = []
+    monkeypatch.setattr(cli, "main", lambda: captured.append(sys.argv.copy()))
+    monkeypatch.setattr(sys, "argv", ["sbx", "enumerate", "bugs", "--dry-run", "--quiet"])
+
+    cli.sbx_main()
+
+    assert captured == [["stringbean", "run", "enumerate bugs", "--dry-run", "--quiet"]]
+
+
+def test_installed_sbx_entrypoint_help_exits_cleanly(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["sbx", "--help"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.sbx_main()
+
+    assert exc.value.code == 0
+    assert "Usage:" in capsys.readouterr().out
 
 
 def test_sbx_script_targets_invocation_directory_not_stringbean_source(tmp_path: Path):
@@ -107,10 +135,44 @@ def test_sbx_codex_final_emits_sentinel_block():
     assert "'dry_run': True" not in result.stdout
 
 
+def test_sbx_plugin_final_alias_emits_sentinel_block():
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [str(repo / "scripts" / "sbx"), "enumerate", "bugs", "--dry-run", "--plugin-final"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "STRINGBEAN_RESULT_START" in result.stdout
+    assert "Status: DRY_RUN" in result.stdout
+    assert "STRINGBEAN_RESULT_END" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
 def test_codex_plugin_sbx_wrapper_emits_sentinel_block():
     repo = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [str(repo / "plugins" / "stringbean" / "scripts" / "sbx-codex"), "enumerate", "bugs", "--dry-run"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "STRINGBEAN_RESULT_START" in result.stdout
+    assert "Status: DRY_RUN" in result.stdout
+    assert "STRINGBEAN_RESULT_END" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
+def test_grok_plugin_sbx_wrapper_emits_sentinel_block():
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [str(repo / "plugins" / "grok-stringbean" / "scripts" / "sbx-grok"), "enumerate", "bugs", "--dry-run"],
         cwd=repo,
         capture_output=True,
         text=True,

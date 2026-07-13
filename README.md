@@ -53,8 +53,25 @@ stringbean CLI
 
 ## Install
 
+From a checkout:
+
 ```bash
-pip install -e .
+python3 -m pip install .
+stringbean --version
+sbx --help
+```
+
+For editable development:
+
+```bash
+python3 -m pip install -e ".[dev]"
+```
+
+If you want the self-bootstrapping source wrapper that can create its own local runtime when the
+active Python is missing dependencies:
+
+```bash
+scripts/install-local-shims.sh
 ```
 
 ## Quick start (5 minutes)
@@ -64,36 +81,29 @@ stringbean init
 stringbean doctor
 stringbean run "Inspect lightweight input validation in API endpoint"
 stringbean run "Implement lightweight input validation in API endpoint"
+sbx "Inspect lightweight input validation in API endpoint"
 stringbean status
 stringbean logs <run-id>
 ```
 
-For the lightweight slash-style flow from any directory, use the repo wrapper:
+For the lightweight slash-style flow from any directory, use the installed `sbx` command:
 
 ```bash
-# from any directory
-~/Documents/stringbean/scripts/sbx "Inspect feature X"
-~/Documents/stringbean/scripts/sbx "Implement feature X"
-# or explicitly:
-~/Documents/stringbean/scripts/stringbean sbx "Implement feature X"
-# or, after sourcing the hook below:
-# source ~/Documents/stringbean/scripts/sbx-zsh-hook.zsh
-stringbean sbx "Implement feature X"
+sbx "Inspect feature X"
+sbx "Implement feature X" --mode auto
+sbx "Refactor auth flow" --mode high
 ```
 
-If `stringbean` points to `~/.local/bin/stringbean`, it may be an old shim and can pick the wrong Python.
-
-Use one of the repo scripts above.  
-From any folder, it should also work without `STRINGBEAN_ROOT` if you use:
+When running straight from a source checkout without installing the package, use the repo wrapper:
 
 ```bash
-./scripts/install-local-shims.sh
+./scripts/sbx "Inspect feature X"
 ```
 
-If your environment cannot write to `~/.local/bin`, add repo scripts to PATH once:
+If `stringbean` or `sbx` resolves to an old global shim, refresh the local shims:
 
 ```bash
-export PATH="$HOME/Documents/stringbean/scripts:$PATH"
+scripts/install-local-shims.sh
 ```
 
 Use `--dry-run` to inspect what would happen before running:
@@ -130,7 +140,7 @@ stringbean run --dry-run "Implement auth checks"
   - `--no-advisor`
   - `--dry-run`
   - `--no-agent-stream` / `--no-agent-output` hides the live provider stdout/stderr stream. By default Stringbean shows selective formatted provider output: prompt echoes and CLI boilerplate are suppressed, visible escapes such as `\n` are decoded, structured JSON answers are collapsed into readable result lines, tool output bodies are capped at three visible lines, terminal output uses TTY-aware bold/white labels, and raw stdout/stderr are still retained in run artifacts.
-  - `--codex-final` emits intermediate status and sanitized agent-output lines prefixed with `STRINGBEAN_INTERMEDIATE:` and a final block wrapped in `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END`. The final block still contains the compatibility `STRINGBEAN_RESULT_START` / `STRINGBEAN_RESULT_END` result block for Codex custom prompts to mirror into the visible final answer.
+  - `--codex-final` / `--plugin-final` emits intermediate status and sanitized agent-output lines prefixed with `STRINGBEAN_INTERMEDIATE:` and a final block wrapped in `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END`. The final block still contains the compatibility `STRINGBEAN_RESULT_START` / `STRINGBEAN_RESULT_END` result block for Codex/Grok plugin wrappers to mirror into the visible final answer.
   - `--quiet`
   - `--run-id`
 - `stringbean resume RUN_ID`
@@ -142,10 +152,13 @@ stringbean run --dry-run "Implement auth checks"
 
 ### Installation alias for quick launch
 
-- `scripts/stringbean` is a local shim that always routes into repo code.
+- `sbx` is installed as a console script by `python3 -m pip install .`.
+- `scripts/stringbean` and `scripts/sbx` are source-checkout shims that always route into repo code.
 
 ```bash
-~/Documents/stringbean/scripts/stringbean run "Quick task"
+stringbean run "Quick task"
+sbx "Quick task"
+./scripts/sbx "Quick task from a source checkout"
 ```
 
 ### Codex quick command (slash-style)
@@ -168,7 +181,7 @@ If you want it as a slash command in your UI, map `/sbx` to run:
 If you want `/sbx` usable directly from zsh terminal:
 
 ```bash
-source ~/Documents/stringbean/scripts/sbx-zsh-hook.zsh
+source /path/to/stringbean/scripts/sbx-zsh-hook.zsh
 ```
 
 Then type:
@@ -202,6 +215,25 @@ If Codex displays the plugin-qualified skill name, choose `stringbean:sbx`.
 
 Codex plugins are installed from this repo's local marketplace at `.agents/plugins/marketplace.json`.
 
+### Grok Build plugin wrapper
+
+For use inside Grok Build, install the local Grok plugin. It provides a user-invocable `sbx` skill for `/sbx ...` that runs `sbx --plugin-final`, surfaces `STRINGBEAN_INTERMEDIATE:` progress, and mirrors the final sentinel result into Grok's visible answer.
+
+Install or refresh it with:
+
+```bash
+scripts/install-grok-plugin.sh
+```
+
+Then restart Grok Build or open a new task and invoke:
+
+```text
+/sbx inspect whether README exists
+/sbx fix typo in README --mode high
+```
+
+If Grok displays plugin-qualified skill names, choose `grok-stringbean:sbx`.
+
 ### Codex custom prompt wrapper
 
 Codex collapses shell-command output into the transcript panel, so Stringbean includes a custom prompt wrapper that tells Codex to run `sbx --codex-final`, summarize only `STRINGBEAN_INTERMEDIATE:` progress and agent-output lines while it runs, and copy the `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END` result into the visible final answer.
@@ -226,7 +258,8 @@ Then restart Codex or open a new task and run:
 - Keep release notes current in [`CHANGELOG.md`](CHANGELOG.md).
 - Read the step-by-step release checklist in [`RELEASE.md`](RELEASE.md).
 - Before announcing publicly, verify:
-  - `python3.10 -m pytest -q` passes
+  - `python -m pytest -q` passes
+  - `python -m build` and `python -m twine check dist/*` pass
   - `stringbean doctor` is green
   - `scripts/sbx` smoke test succeeds for a tiny task
 
@@ -250,6 +283,7 @@ agents:
     role: orchestrator
     permissions: read_write
     command: null
+    prompt_transport: stdin
     timeout_seconds: 1800
 
   fable:
@@ -258,14 +292,21 @@ agents:
     role: advisor
     permissions: read_only
     command: null
+    prompt_transport: stdin
     timeout_seconds: 900
 
   grok:
     adapter: grok
-    model: grok-4.5
+    model: grok-build
     role: implementer
     permissions: read_write
-    command: null
+    command:
+      - grok
+      - --model
+      - grok-build
+      - --reasoning-effort
+      - high
+    prompt_transport: argv
 
 workflow:
   orchestrator: sol
@@ -346,7 +387,7 @@ Preset A (Sol + Fable + Grok):
 
 - orchestrator: Codex / GPT-5.6 Sol
 - advisor: Claude / Fable 5
-- implementer: Grok / Grok 4.5
+- implementer: Grok / grok-build
 - reviewer: Codex / GPT-5.6 Sol
 
 Preset B (Fable architecture, external implementer):
@@ -366,7 +407,7 @@ Preset D (fine-grained model mix):
 - GPT-5.6: high/medium/low reasoning as separate agents
 - GPT-5.5: high/medium/low reasoning as separate agents
 - Claude: Opus 4.8, Fable 5, Sonnet 5
-- Grok: build/review profiles
+- Grok: build/review profiles using headless argv prompt transport (`grok ... -p "<prompt>"`)
 
 `--mode auto` enumerates the configured candidate agents/models for each role, infers high/medium/low from the task text, then selects the lowest-cost adequate candidate for that role. Dry runs include `available_models` and `selection_rationale` so you can see what was considered and why an agent was selected. Simple read/list/show tasks route to low reasoning candidates; complex refactors, migrations, security, architecture, and distributed-system tasks route to stronger high reasoning candidates. You can pin by role with `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, and `--reviewer-mode`.
 

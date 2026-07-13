@@ -13,17 +13,17 @@ Thanks for checking this out. stringbean is intentionally small and practical, s
 ## Setup
 
 ```bash
-python3.10 -m pip install -e .[dev]
+python -m pip install -e ".[dev]"
 ```
 
-> If you use Python 3.11 and do not have dependencies installed there, run `python3.10` commands instead.
+Python 3.10, 3.11, and 3.12 are tested in CI.
 
 ## Development checks
 
 Run the full test suite before opening a PR:
 
 ```bash
-python3.10 -m pytest -q
+python -m pytest -q
 ```
 
 When you touch CLI behavior, add/adjust tests in `tests/` for:

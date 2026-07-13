@@ -108,6 +108,50 @@ def test_generic_command_construction_from_config(tmp_path: Path):
     assert cmd == ["echo", "hello"]
 
 
+def test_grok_adapter_uses_headless_single_prompt_transport(tmp_path: Path):
+    from agent_relay.adapters import GrokAdapter
+
+    cfg = AgentConfig(
+        name="grok-build",
+        adapter="grok",
+        role="implementer",
+        permissions="read_write",
+        command=["grok", "--model", "grok-build", "--reasoning-effort", "high"],
+        prompt_transport="argv",
+    )
+
+    adapter = GrokAdapter(cfg)
+
+    assert adapter.supports_prompt_transport("argv")
+    assert adapter.supports_prompt_transport("file")
+    assert not adapter.supports_prompt_transport("stdin")
+    assert adapter.build_command("prompt", tmp_path) == [
+        "grok",
+        "--model",
+        "grok-build",
+        "--reasoning-effort",
+        "high",
+        "-p",
+    ]
+
+
+def test_grok_adapter_uses_prompt_file_transport(tmp_path: Path):
+    from agent_relay.adapters import GrokAdapter
+
+    cfg = AgentConfig(
+        name="grok-review",
+        adapter="grok",
+        role="reviewer",
+        permissions="read_only",
+        command=["grok", "--model", "grok-build"],
+        prompt_transport="file",
+    )
+
+    adapter = GrokAdapter(cfg)
+
+    assert adapter.build_command("prompt", tmp_path) == ["grok", "--model", "grok-build", "--prompt-file"]
+
+
 def test_parser_designated_block_and_fallback(tmp_path: Path):
     text = """
 noise

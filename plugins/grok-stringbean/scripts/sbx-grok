@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd -- "$PLUGIN_ROOT/../.." 2>/dev/null && pwd || true)"
+
+if [[ -n "${STRINGBEAN_SBX:-}" ]]; then
+  SBX="$STRINGBEAN_SBX"
+elif [[ -n "$REPO_ROOT" && -x "$REPO_ROOT/scripts/sbx" ]]; then
+  SBX="$REPO_ROOT/scripts/sbx"
+elif command -v sbx >/dev/null 2>&1; then
+  SBX="$(command -v sbx)"
+else
+  printf 'Stringbean sbx was not found. Install the local shim or set STRINGBEAN_SBX.\n' >&2
+  exit 127
+fi
+
+for arg in "$@"; do
+  if [[ "$arg" == "--plugin-final" || "$arg" == "--codex-final" ]]; then
+    exec "$SBX" "$@"
+  fi
+done
+
+exec "$SBX" "$@" --plugin-final
