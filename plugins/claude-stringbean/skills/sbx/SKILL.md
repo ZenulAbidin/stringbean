@@ -37,13 +37,18 @@ sbx "<task text>" <flags> --plugin-compact-output
    timeout would terminate the process, start it as a background task and immediately use blocking
    `TaskOutput` calls instead. A timeout is a polling boundary, never permission to kill Stringbean.
    Repeat bounded waits for as many hours as needed while fresh five-second heartbeat or agent-output
-   lines continue to arrive. Stop only after a confirmed process failure, an explicit Stringbean
-   watchdog result, or clear repeated no-progress output. Do not use `Monitor`, do not tell the user
-   to wait, and do not end the turn before the command completes or fails.
+   lines continue to arrive. Stop only after a confirmed process failure or an explicit user-approved
+   interruption. Do not use `Monitor` or tell the user to wait.
    Each provider subprocess launch is marked with `STRINGBEAN_INTERMEDIATE: Command:`.
    Claude subprocess events are reconstructed live as concise `assistant:`, `Tool Call:`, and
    `Executed:` lines; do not wait for the subprocess to exit before showing those lines.
-5. After completion, read the final result between:
+5. If Stringbean emits `STRINGBEAN_INTERMEDIATE: Watchdog: approval required`, leave the background
+   task alive and ask the user whether to stop it. The watchdog line is not authorization to call a
+   task-kill operation. Kill that exact task only after an unambiguous yes; otherwise resume
+   `TaskOutput` polling. If Claude cannot preserve the task while asking, default to continuing it.
+6. Do not end the turn before the command completes or fails, except to request this explicit
+   watchdog decision while the background task remains alive.
+7. After completion, read the final result between:
 
 ```text
 STRINGBEAN_FINAL_START
@@ -57,7 +62,7 @@ STRINGBEAN_RESULT_START
 STRINGBEAN_RESULT_END
 ```
 
-6. The visible final answer should report the useful fields from that result block, especially
+8. The visible final answer should report the useful fields from that result block, especially
    `Status`, `Result`, `Error`, `Tasks`, `Review rounds`, and `Artifacts`.
 
 ## Output rules

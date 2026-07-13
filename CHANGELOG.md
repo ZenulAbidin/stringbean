@@ -6,7 +6,7 @@
 
 - Plain directories are now first-class workspaces: Git is optional by default, provider context stays scoped to the invocation directory, and Codex's non-Git execution path remains enabled.
 - Sensitive path patterns, escaping symlinks, and nested repositories are excluded from provider context and protected by the Linux subprocess policy; excluded access is skipped without policy retries.
-- Provider calls no longer inherit a 20-minute wall-clock kill timer. The default watchdog now targets two hours of true output inactivity or 200 repeated identical lines while allowing active multi-hour tasks to continue.
+- Provider calls no longer inherit a 20-minute wall-clock kill timer. Watchdog thresholds now request explicit human approval and keep the agent alive whenever approval is declined, missing, or unavailable.
 - Preset C now generates real Grok Build agents at low, medium, and high reasoning levels instead of unusable `cat` placeholder agents.
 - Agent-plugin runs now emit every provider-process launch plus five-second keepalives, and Grok calls stream safely without exposing hidden thought events.
 - Claude calls now use noninteractive stream JSON with immediate pipe forwarding, compact tool/result formatting, and valid full model IDs.

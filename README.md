@@ -369,9 +369,13 @@ output:
 `environment_overrides`, `timeout_seconds`, `idle_timeout_seconds`,
 `max_repeated_output_lines`, `working_directory`, and optional `fallback_agent`.
 
-`timeout_seconds: 0` disables the blunt wall-clock limit, which is the default. The idle watchdog
-defaults to two hours without provider output, and the repetition watchdog stops a subprocess only
-after 200 consecutive identical output lines. Set either watchdog value to `0` to disable it.
+`timeout_seconds: 0` disables the wall-clock intervention threshold, which is the default. The idle
+watchdog asks after two hours without provider output, and the repetition watchdog asks after 200
+consecutive identical output lines. A watchdog never terminates an agent without explicit approval:
+an interactive terminal prompts directly, while plugin output emits
+`STRINGBEAN_INTERMEDIATE: Watchdog: approval required` for the host to show the user. Missing,
+declined, or unavailable approval always means continue. An unchanged condition is reported once;
+idle monitoring re-arms after genuine provider output. Set any threshold to `0` to disable it.
 
 Roles: `orchestrator`, `advisor`, `implementer`, `reviewer`, `tester`, `researcher`, `generic`  
 Permissions: `read_only` or `read_write`
@@ -492,7 +496,7 @@ Each run gets `.stringbean/runs/<run-id>/` with:
 - The `ro` profile is create-only: new files/directories are allowed, while modifications, deletes, renames, moves, or type changes to existing paths are treated as policy violations.
 - Read-only roles can be checked with repository diff snapshots; unauthorized writes are treated as policy violations.
 - Dirty repositories are warned on startup and can be blocked with `require_clean_start: true`.
-- Provider calls have no wall-clock deadline by default. An idle watchdog and repeated-output watchdog target stuck commands and obvious loops while allowing active multi-hour tasks to continue.
+- Provider calls have no wall-clock deadline by default. Idle and repeated-output watchdogs request a human decision without stopping the agent; only explicit approval or user cancellation can terminate a long-running call.
 - No forced git commits/pushes or resets are performed.
 
 ## Troubleshooting

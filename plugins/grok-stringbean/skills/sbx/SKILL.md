@@ -38,8 +38,12 @@ sbx "<task and flags>" --plugin-full-output
    polling boundary, never permission to kill Stringbean. If a running command/session is returned,
    poll every 5-10 seconds for as many hours as needed. Do not kill or replace the command while
    fresh five-second heartbeat or agent-output lines continue to arrive. Stop only after a confirmed
-   process failure, an explicit Stringbean watchdog result, or clear repeated no-progress output.
-5. After completion, read the final result between:
+   process failure or an explicit user-approved interruption.
+5. If Stringbean emits `STRINGBEAN_INTERMEDIATE: Watchdog: approval required`, preserve the running
+   command session and ask the user whether to stop it. The warning itself is not authorization.
+   Terminate that exact session only after an unambiguous yes; otherwise keep polling. If Grok cannot
+   preserve the session while asking, default to continuing it.
+6. After completion, read the final result between:
 
 ```text
 STRINGBEAN_FINAL_START
@@ -53,7 +57,7 @@ STRINGBEAN_RESULT_START
 STRINGBEAN_RESULT_END
 ```
 
-6. The visible final answer should report the useful fields from that result block, especially
+7. The visible final answer should report the useful fields from that result block, especially
    `Status`, `Result`, `Error`, `Tasks`, `Review rounds`, and `Artifacts`.
 
 Grok provider calls use `streaming-json` internally. Stringbean filters hidden thoughts,

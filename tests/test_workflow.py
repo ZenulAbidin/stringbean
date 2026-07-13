@@ -15,6 +15,7 @@ from agent_relay.state import RunState, create_new_run
 from agent_relay.workflow import WorkflowEngine
 from agent_relay.models import ImplementerResponse, OrchestratorPlan, RunStatus
 from agent_relay.policy import git_command, install_command_policy_wrappers, internal_subprocess_env
+from agent_relay.runner import WatchdogEvent
 from tests.helpers import write_fake_agent
 
 
@@ -597,16 +598,24 @@ time.sleep(10)
 
     cfg = _single_file_transport_agent_config(script)
     cfg.agents["implementer"].environment_overrides["SEEN_PROMPT_PATH"] = str(seen_prompt_path)
+    watchdog_decider = None
     if failure_mode == "timeout":
         cfg.agents["implementer"].timeout_seconds = 0.2
-        expected_error = "timed out"
+        expected_error = "explicit watchdog approval"
+        watchdog_decider = lambda _event: "terminate"
     else:
         cfg.agents["implementer"].working_directory = "missing-working-directory"
         expected_error = "execution failed"
 
     run_dir = create_new_run(tmp_path, f"run-file-transport-{failure_mode}", "File transport prompt", 20, {})
     state = RunState.load(run_dir.state_path)
-    engine = WorkflowEngine(cfg, run_dir, state, quiet=True)
+    engine = WorkflowEngine(
+        cfg,
+        run_dir,
+        state,
+        quiet=True,
+        watchdog_decider=watchdog_decider,
+    )
 
     with pytest.raises(RuntimeError, match=expected_error):
         asyncio.run(
@@ -625,6 +634,8 @@ time.sleep(10)
     assert "File transport prompt body" in call_dir.joinpath("prompt.md").read_text(encoding="utf-8")
     result_payload = json.loads(call_dir.joinpath("result.json").read_text(encoding="utf-8"))
     assert expected_error in result_payload["parse_error"]
+    if failure_mode == "timeout":
+        assert result_payload["metadata"]["watchdog_events"][0]["decision"] == "terminate"
     if seen_prompt_path.exists():
         used_prompt_path = Path(seen_prompt_path.read_text(encoding="utf-8"))
         assert not used_prompt_path.exists()
@@ -664,6 +675,65 @@ def test_codex_progress_prints_sanitized_stage_updates(tmp_path: Path, capsys):
     assert "Progress: Review verdict" in captured.out
     assert "STRINGBEAN_INTERMEDIATE: Agent output: stderr status from planner" in captured.out
     assert "stream output start" not in captured.out
+
+
+def test_plugin_watchdog_event_requests_approval_without_terminating(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    run_dir = create_new_run(tmp_path, "run-watchdog-plugin", "Long task", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(_build_config(fake), run_dir, state, quiet=True, codex_progress=True)
+    event = WatchdogEvent(
+        kind="idle",
+        message="process produced no output for 7200 seconds; it may be waiting or stuck",
+        elapsed_seconds=7200,
+        threshold=7200,
+    )
+
+    decision = engine._watchdog_decision("implementer", "implementer", event)
+
+    captured = capsys.readouterr()
+    assert decision == "continue"
+    assert "STRINGBEAN_INTERMEDIATE: Watchdog: approval required" in captured.out
+    assert "The agent remains running" in captured.out
+    assert "ask the user before interrupting" in captured.out
+
+
+def test_interactive_watchdog_terminates_only_after_confirmation(
+    tmp_path: Path, monkeypatch, capsys
+):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    run_dir = create_new_run(tmp_path, "run-watchdog-tty", "Long task", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(_build_config(fake), run_dir, state)
+    engine.console = workflow_module.Console(force_terminal=True)
+
+    class TtyInput:
+        @staticmethod
+        def isatty() -> bool:
+            return True
+
+    monkeypatch.setattr(workflow_module.sys, "stdin", TtyInput())
+    confirmations: list[str] = []
+
+    def approve(prompt: str, **_kwargs):
+        confirmations.append(prompt)
+        return True
+
+    monkeypatch.setattr(workflow_module.Confirm, "ask", approve)
+    event = WatchdogEvent(
+        kind="repeated_output",
+        message="process repeated one line 200 times and may be looping",
+        elapsed_seconds=30,
+        threshold=200,
+    )
+
+    decision = engine._watchdog_decision("implementer", "implementer", event)
+
+    assert decision == "terminate"
+    assert confirmations and "Stop this agent?" in confirmations[0]
+    assert "termination approved" in capsys.readouterr().out
 
 
 def test_codex_progress_streams_sanitized_agent_output_and_suppresses_reasoning(

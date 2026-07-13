@@ -316,6 +316,8 @@ def test_plugin_skills_treat_host_timeouts_as_polling_boundaries():
     for path in skill_paths:
         text = path.read_text(encoding="utf-8")
         assert "polling boundary" in text
+        assert "STRINGBEAN_INTERMEDIATE: Watchdog: approval required" in text
+        assert "explicit user-approved" in text
         assert "1,800 seconds" not in text
         assert "3,600 seconds" not in text
 

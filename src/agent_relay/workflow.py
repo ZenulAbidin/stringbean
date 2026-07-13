@@ -9,9 +9,11 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Type
+import sys
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
 
 from rich.console import Console
+from rich.prompt import Confirm
 from rich.text import Text
 
 from .connectors import Adapter, AdapterCapabilities, ClaudeConnector, CodexConnector, GenericConnector, GrokConnector
@@ -40,7 +42,13 @@ from .policy import (
     path_without_policy_bins,
     policy_prompt,
 )
-from .runner import RunnerConfig, run_subprocess
+from .runner import (
+    RunnerConfig,
+    WatchdogDecision,
+    WatchdogEvent,
+    WatchdogTermination,
+    run_subprocess,
+)
 from .state import CallStore, RunDirectory, RunEventStore, RunState, now_iso
 from .streaming import LiveStreamFormatter
 from .templates import render_template
@@ -181,6 +189,7 @@ class WorkflowEngine:
         repo_root: Optional[Path] = None,
         raw_agent_output: bool = False,
         ignore_sandbox_warnings: bool = False,
+        watchdog_decider: Optional[Callable[[WatchdogEvent], WatchdogDecision]] = None,
     ) -> None:
         self.config = config
         self.run_dir = run_dir
@@ -191,6 +200,7 @@ class WorkflowEngine:
         self.progress_interval_seconds = progress_interval_seconds
         self.raw_agent_output = raw_agent_output
         self.ignore_sandbox_warnings = ignore_sandbox_warnings
+        self.watchdog_decider = watchdog_decider
         self.execution_profile = normalize_execution_profile(execution_profile)
         self.adapters = build_adapters(config)
         self.events = RunEventStore(self.run_dir.events_path)
@@ -420,6 +430,48 @@ class WorkflowEngine:
     def _progress_agent_finish(self, role: str, agent_name: str, exit_code: Optional[int], duration_seconds: float) -> None:
         elapsed = self._format_elapsed(duration_seconds)
         self._progress(f"Agent: {role} {agent_name} finished in {elapsed} (exit={exit_code}).")
+
+    def _watchdog_decision(
+        self,
+        role: str,
+        agent_name: str,
+        event: WatchdogEvent,
+    ) -> WatchdogDecision:
+        if self.watchdog_decider is not None:
+            return self.watchdog_decider(event)
+
+        detail = event.message
+        if self._agent_output_redaction_values:
+            detail = redact_environment_text(detail, self._agent_output_redaction_values)
+        detail = self._shorten_text(detail, limit=320)
+
+        if self.codex_progress:
+            self._progress(
+                f"Watchdog: approval required — {role} {agent_name}: {detail}. "
+                "The agent remains running; ask the user before interrupting this process."
+            )
+            return "continue"
+
+        if bool(getattr(self.console, "is_terminal", False)) and sys.stdin.isatty():
+            self._flush_agent_stream(final=False)
+            approved = Confirm.ask(
+                f"Watchdog noticed {role} {agent_name}: {detail}. Stop this agent?",
+                default=False,
+                console=self.console,
+            )
+            if approved:
+                self.console.print("Watchdog termination approved; stopping this agent.", style="bold white")
+                return "terminate"
+            self.console.print("Watchdog termination declined; the agent is still running.", style="white")
+            return "continue"
+
+        self._flush_agent_stream(final=False)
+        self.console.print(
+            "Watchdog approval unavailable in this non-interactive session; "
+            f"continuing {role} {agent_name} without termination. Reason: {detail}",
+            style="white",
+        )
+        return "continue"
 
     def _progress_payload(self, role: str, payload: Dict[str, Any]) -> None:
         summary = self._shorten_text(payload.get("summary") or "")
@@ -1272,12 +1324,20 @@ class WorkflowEngine:
             "wall_clock_timeout_seconds": agent.timeout_seconds,
             "idle_timeout_seconds": agent.idle_timeout_seconds,
             "max_repeated_output_lines": agent.max_repeated_output_lines,
+            "watchdog_termination_requires_approval": True,
             "policy_retry_attempt": policy_retry_attempt,
             "policy_retry_limit": self.config.workflow.max_policy_violation_retries,
         }
 
-        def record_execution_failure(parse_error: str, raw_stderr: str) -> None:
+        def record_execution_failure(
+            parse_error: str,
+            raw_stderr: str,
+            extra_metadata: Optional[Dict[str, object]] = None,
+        ) -> None:
             timestamp = _now_iso()
+            failure_metadata = dict(policy_metadata)
+            if extra_metadata:
+                failure_metadata.update(extra_metadata)
             call_result = AgentCallResult(
                 agent_name=agent_name,
                 role=role,
@@ -1292,7 +1352,7 @@ class WorkflowEngine:
                 parsed_output=None,
                 parse_error=parse_error,
                 diff_delta_files=None,
-                metadata=dict(policy_metadata),
+                metadata=failure_metadata,
             )
             self.state.state.call_count += 1
             idx = self._run_dir_index()
@@ -1320,6 +1380,7 @@ class WorkflowEngine:
             self._progress(
                 f"Command: launching {Path(command[0]).name} for {role} {agent_name} "
                 f"(wall-clock={wall_clock}, idle-watchdog={agent.idle_timeout_seconds:g}s, "
+                "watchdog-action=ask, "
                 f"heartbeat={self.progress_interval_seconds:g}s)."
             )
         should_stream_agent_output = stream_agent_output or codex_agent_output
@@ -1349,19 +1410,31 @@ class WorkflowEngine:
                     on_stdout_line=callback,
                     on_stderr_line=callback,
                     on_progress=progress_callback,
+                    on_watchdog=lambda event: self._watchdog_decision(role, agent_name, event),
                     progress_interval_seconds=self.progress_interval_seconds,
                 )
             )
-        except TimeoutError as exc:
+        except WatchdogTermination as exc:
             if should_stream_agent_output:
                 self._flush_agent_stream()
                 self._agent_stream_formatter = None
             if self.codex_progress:
                 self._progress(
-                    f"Agent: {role} {agent_name} stopped by watchdog — {self._shorten_text(exc)}."
+                    f"Agent: {role} {agent_name} stopped after explicit watchdog approval — "
+                    f"{self._shorten_text(exc)}."
                 )
-            record_execution_failure(f"agent {agent_name} stopped by watchdog: {exc}", str(exc))
-            raise RuntimeError(f"agent {agent_name} stopped by watchdog: {exc}") from exc
+            record_execution_failure(
+                f"agent {agent_name} stopped after explicit watchdog approval: {exc}",
+                str(exc),
+                {
+                    "watchdog_events": [
+                        {**exc.event.as_dict(), "decision": "terminate"}
+                    ]
+                },
+            )
+            raise RuntimeError(
+                f"agent {agent_name} stopped after explicit watchdog approval: {exc}"
+            ) from exc
         except Exception as exc:
             if should_stream_agent_output:
                 self._flush_agent_stream()
@@ -1422,6 +1495,8 @@ class WorkflowEngine:
             diff_delta_files=None,
             metadata={},
         )
+        if result.watchdog_events:
+            call_result.metadata["watchdog_events"] = result.watchdog_events
 
         changed_paths: List[str] | None = None
         denied_paths: List[str] = []

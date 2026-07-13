@@ -33,9 +33,13 @@ plugins/stringbean/scripts/sbx-codex "<task and flags>"
    finite host timeout as a polling boundary, never permission to kill the workflow. If the terminal yields a running
    session, poll it every 5-10 seconds and continue across as many bounded waits as necessary.
    Do not terminate while fresh Stringbean heartbeat or agent-output lines continue to arrive.
-   Multi-hour implementation calls are valid. Stop only after a confirmed process failure, an
-   explicit Stringbean watchdog result, or clear repeated no-progress output.
-6. After the command finishes, find the final block between:
+   Multi-hour implementation calls are valid. Stop only after a confirmed process failure or an
+   explicit user-approved interruption.
+6. If Stringbean emits `STRINGBEAN_INTERMEDIATE: Watchdog: approval required`, keep that exact
+   terminal session alive and ask the user whether to stop it. The watchdog line is a warning, not
+   termination authorization. Interrupt that session only after an unambiguous yes; otherwise keep
+   polling. If the host cannot preserve the process while asking, default to continuing it.
+7. After the command finishes, find the final block between:
 
 ```text
 STRINGBEAN_FINAL_START
@@ -49,7 +53,7 @@ STRINGBEAN_RESULT_START
 STRINGBEAN_RESULT_END
 ```
 
-7. The visible final answer must report the useful fields from that block, especially:
+8. The visible final answer must report the useful fields from that block, especially:
    `Status`, `Result`, `Tasks`, `Review rounds`, and `Artifacts`.
 
 ## During the run

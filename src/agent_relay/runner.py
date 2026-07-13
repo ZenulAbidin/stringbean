@@ -8,9 +8,39 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Literal, Optional
 
 from .policy import command_policy_denial
+
+
+WatchdogDecision = Literal["continue", "terminate"]
+WatchdogKind = Literal["wall_clock", "idle", "repeated_output"]
+
+
+@dataclass(frozen=True)
+class WatchdogEvent:
+    kind: WatchdogKind
+    message: str
+    elapsed_seconds: float
+    threshold: float | int
+    repeated_line: str = ""
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "kind": self.kind,
+            "message": self.message,
+            "elapsed_seconds": self.elapsed_seconds,
+            "threshold": self.threshold,
+            "repeated_line": self.repeated_line,
+        }
+
+
+class WatchdogTermination(TimeoutError):
+    """Raised only after a watchdog callback explicitly approves termination."""
+
+    def __init__(self, event: WatchdogEvent) -> None:
+        self.event = event
+        super().__init__(event.message)
 
 
 @dataclass
@@ -25,6 +55,7 @@ class RunnerConfig:
     on_stdout_line: Optional[Callable[[str], None]] = None
     on_stderr_line: Optional[Callable[[str], None]] = None
     on_progress: Optional[Callable[[float], None]] = None
+    on_watchdog: Optional[Callable[[WatchdogEvent], WatchdogDecision]] = None
     progress_interval_seconds: float = 30.0
 
 
@@ -37,20 +68,24 @@ class RunnerOutput:
     end_time: str
     raw_stdout: str
     raw_stderr: str
+    watchdog_events: List[Dict[str, object]] = field(default_factory=list)
 
 
 @dataclass
 class _OutputWatchdog:
     max_repeated_output_lines: int
     last_activity: float = field(default_factory=time.monotonic)
+    acknowledged_idle_activity: float | None = None
     last_line: str = ""
     repeated_lines: int = 0
     repeated_line: str = ""
+    acknowledged_repeated_line: str = ""
     lock: Lock = field(default_factory=Lock)
 
     def observe(self, text: str) -> None:
         with self.lock:
             self.last_activity = time.monotonic()
+            self.acknowledged_idle_activity = None
             for raw_line in text.splitlines():
                 line = " ".join(raw_line.split())
                 if not line:
@@ -61,15 +96,29 @@ class _OutputWatchdog:
                     self.last_line = line
                     self.repeated_lines = 1
                     self.repeated_line = ""
+                    self.acknowledged_repeated_line = ""
                 if (
                     self.max_repeated_output_lines > 0
                     and self.repeated_lines >= self.max_repeated_output_lines
+                    and line != self.acknowledged_repeated_line
                 ):
                     self.repeated_line = line[:160]
 
-    def snapshot(self) -> tuple[float, int, str]:
+    def snapshot(self) -> tuple[float, bool, int, str]:
         with self.lock:
-            return self.last_activity, self.repeated_lines, self.repeated_line
+            return (
+                self.last_activity,
+                self.acknowledged_idle_activity == self.last_activity,
+                self.repeated_lines,
+                self.repeated_line,
+            )
+
+    def acknowledge(self) -> None:
+        with self.lock:
+            self.acknowledged_idle_activity = self.last_activity
+            if self.repeated_line:
+                self.acknowledged_repeated_line = self.last_line
+                self.repeated_line = ""
 
 
 def _safe_invoke(callback: Callable[[str], None], line: str) -> None:
@@ -86,6 +135,22 @@ def _safe_invoke_progress(callback: Callable[[float], None], elapsed_seconds: fl
     except Exception:
         # Progress callbacks are best-effort telemetry.
         pass
+
+
+def _safe_watchdog_decision(
+    callback: Optional[Callable[[WatchdogEvent], WatchdogDecision]],
+    event: WatchdogEvent,
+) -> WatchdogDecision:
+    if callback is None:
+        return "continue"
+    try:
+        decision = callback(event)
+    except Exception:
+        # Failure to obtain approval must never become implicit approval.
+        return "continue"
+    if decision == "terminate":
+        return "terminate"
+    return "continue"
 
 
 def _to_str_lines(buffer: bytes) -> str:
@@ -153,6 +218,7 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
             end_time=_timestamp_iso(end),
             raw_stdout="",
             raw_stderr=f"{denial}\n",
+            watchdog_events=[],
         )
 
     proc = subprocess.Popen(
@@ -172,6 +238,7 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
     watchdog = _OutputWatchdog(max_repeated_output_lines=max_repeated_output_lines)
+    watchdog_events: list[Dict[str, object]] = []
 
     threads = [
         Thread(target=_pump_stream, args=(proc.stdout, cfg.on_stdout_line, stdout_chunks, watchdog), daemon=True),
@@ -182,29 +249,68 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
 
     try:
         end_by = monotonic_start + timeout_seconds if timeout_seconds > 0 else None
+        wall_clock_acknowledged = False
         next_progress_at = monotonic_start + float(cfg.progress_interval_seconds)
         while True:
             code = proc.poll()
             if code is not None:
                 break
             now = time.monotonic()
-            if end_by is not None and now >= end_by:
-                raise TimeoutError(f"process timed out after {timeout_seconds} seconds")
-            last_activity, repeated_lines, repeated_line = watchdog.snapshot()
-            if idle_timeout_seconds > 0 and now - last_activity >= idle_timeout_seconds:
-                raise TimeoutError(
-                    f"process produced no output for {idle_timeout_seconds} seconds and appears stuck"
+            watchdog_event: WatchdogEvent | None = None
+            if end_by is not None and not wall_clock_acknowledged and now >= end_by:
+                watchdog_event = WatchdogEvent(
+                    kind="wall_clock",
+                    message=(
+                        f"configured wall-clock threshold of {timeout_seconds:g} seconds was reached; "
+                        "completion time is unknown"
+                    ),
+                    elapsed_seconds=now - monotonic_start,
+                    threshold=timeout_seconds,
                 )
-            if max_repeated_output_lines > 0 and repeated_line:
-                raise TimeoutError(
-                    "process appears to be in an output loop after repeating one line "
-                    f"{repeated_lines} times: {repeated_line}"
+            last_activity, idle_acknowledged, repeated_lines, repeated_line = watchdog.snapshot()
+            if (
+                watchdog_event is None
+                and idle_timeout_seconds > 0
+                and not idle_acknowledged
+                and now - last_activity >= idle_timeout_seconds
+            ):
+                watchdog_event = WatchdogEvent(
+                    kind="idle",
+                    message=(
+                        f"process produced no output for {idle_timeout_seconds:g} seconds; "
+                        "it may be waiting or stuck"
+                    ),
+                    elapsed_seconds=now - monotonic_start,
+                    threshold=idle_timeout_seconds,
                 )
+            if watchdog_event is None and max_repeated_output_lines > 0 and repeated_line:
+                watchdog_event = WatchdogEvent(
+                    kind="repeated_output",
+                    message=(
+                        f"process repeated one line {repeated_lines} times and may be looping: "
+                        f"{repeated_line}"
+                    ),
+                    elapsed_seconds=now - monotonic_start,
+                    threshold=max_repeated_output_lines,
+                    repeated_line=repeated_line,
+                )
+            if watchdog_event is not None:
+                decision = _safe_watchdog_decision(cfg.on_watchdog, watchdog_event)
+                watchdog_events.append({**watchdog_event.as_dict(), "decision": decision})
+                if decision == "terminate":
+                    if proc.poll() is not None:
+                        code = proc.returncode
+                        break
+                    raise WatchdogTermination(watchdog_event)
+                watchdog.acknowledge()
+                if watchdog_event.kind == "wall_clock":
+                    wall_clock_acknowledged = True
+                continue
             if cfg.on_progress and cfg.progress_interval_seconds > 0 and now >= next_progress_at:
                 _safe_invoke_progress(cfg.on_progress, now - monotonic_start)
                 next_progress_at = now + float(cfg.progress_interval_seconds)
             await asyncio.sleep(0.05)
-    except TimeoutError:
+    except WatchdogTermination:
         _terminate_process_group(proc)
         try:
             code = proc.wait(timeout=5)
@@ -249,6 +355,7 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
         end_time=end_iso,
         raw_stdout="".join(stdout_chunks),
         raw_stderr="".join(stderr_chunks),
+        watchdog_events=watchdog_events,
     )
 
 
