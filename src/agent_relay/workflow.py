@@ -158,6 +158,7 @@ class WorkflowEngine:
         execution_profile: str = "rw",
         codex_progress: bool = False,
         progress_interval_seconds: float = 30.0,
+        repo_root: Optional[Path] = None,
     ) -> None:
         self.config = config
         self.run_dir = run_dir
@@ -170,10 +171,11 @@ class WorkflowEngine:
         self.adapters = build_adapters(config)
         self.events = RunEventStore(self.run_dir.events_path)
         self.call_store = CallStore(self.run_dir.calls_dir)
-        repo_root = self.run_dir.path
-        for _ in range(3):
-            repo_root = repo_root.parent
-        self.repo_root = repo_root
+        resolved_repo_root = Path(repo_root).resolve() if repo_root is not None else self.run_dir.path
+        if repo_root is None:
+            for _ in range(3):
+                resolved_repo_root = resolved_repo_root.parent
+        self.repo_root = resolved_repo_root
         self.call_counter = 0
         if self.run_dir.calls_dir.exists():
             existing = [p for p in self.run_dir.calls_dir.iterdir() if p.is_dir()]
@@ -716,6 +718,20 @@ class WorkflowEngine:
             if raw
         ]
 
+    def _is_git_worktree(self) -> bool:
+        try:
+            proc = subprocess.run(
+                [git_command(), "rev-parse", "--is-inside-work-tree"],
+                cwd=self.repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=internal_subprocess_env(),
+            )
+        except FileNotFoundError:
+            return False
+        return proc.returncode == 0 and proc.stdout.strip() == "true"
+
     def _repo_baseline_content_snapshot(self, status_entries: Dict[str, str]) -> Dict[str, PathContentState]:
         snapshot: Dict[str, PathContentState] = {}
         for current_root, dir_names, _ in os.walk(self.repo_root, topdown=True, followlinks=False):
@@ -965,6 +981,7 @@ class WorkflowEngine:
         execution_prompt = policy_prompt(self.execution_profile, self._effective_permission(agent)) + "\n\n" + agent_prompt
 
         cfg_prompt = None
+        prompt_file: Optional[Path] = None
         if agent.prompt_transport == "argv":
             command = command + [execution_prompt]
         elif agent.prompt_transport == "file":
@@ -972,6 +989,7 @@ class WorkflowEngine:
             tmp.write(execution_prompt)
             tmp.flush()
             tmp.close()
+            prompt_file = Path(tmp.name)
             command = command + [tmp.name]
         else:
             cfg_prompt = execution_prompt
@@ -985,6 +1003,46 @@ class WorkflowEngine:
             redaction_values = environment_redaction_values(env)
         else:
             redaction_values = []
+
+        policy_metadata = {
+            "selected_agent": original_agent_name,
+            "effective_agent": agent_name,
+            "requested_profile": self.state.state.execution_profile,
+            "effective_profile": self.execution_profile,
+            "execution_profile": self.execution_profile,
+            "effective_permission": self._effective_permission(agent),
+            "denied_commands": list(DENIED_COMMANDS),
+            "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
+            "policy_bin": str(self.policy_bin_dir),
+            "policy_wrappers_active": self.policy_bin_dir.is_dir(),
+            "policy_preload_path": str(self.policy_bin_dir / POLICY_PRELOAD_NAME),
+            "policy_preload_active": (self.policy_bin_dir / POLICY_PRELOAD_NAME).is_file(),
+            "policy_retry_attempt": policy_retry_attempt,
+            "policy_retry_limit": self.config.workflow.max_policy_violation_retries,
+        }
+
+        def record_execution_failure(parse_error: str, raw_stderr: str) -> None:
+            timestamp = _now_iso()
+            call_result = AgentCallResult(
+                agent_name=agent_name,
+                role=role,
+                stage=stage,
+                command=command,
+                exit_code=None,
+                duration_seconds=0.0,
+                start_time=timestamp,
+                end_time=timestamp,
+                raw_stdout="",
+                raw_stderr=raw_stderr,
+                parsed_output=None,
+                parse_error=parse_error,
+                diff_delta_files=None,
+                metadata=dict(policy_metadata),
+            )
+            self.state.state.call_count += 1
+            idx = self._run_dir_index()
+            self.call_store.write_call_files(idx, agent_name, execution_prompt, call_result)
+            self.state.write()
 
         stream_agent_output = bool(self.config.output.stream_agent_output and not self.quiet)
         if stream_agent_output:
@@ -1020,6 +1078,7 @@ class WorkflowEngine:
                 self._agent_stream_formatter = None
             if self.codex_progress:
                 self._progress(f"Agent: {role} {agent_name} timed out.")
+            record_execution_failure(f"agent {agent_name} timed out", str(exc))
             raise RuntimeError(f"agent {agent_name} timed out") from exc
         except Exception as exc:
             if stream_agent_output:
@@ -1027,8 +1086,11 @@ class WorkflowEngine:
                 self._agent_stream_formatter = None
             if self.codex_progress:
                 self._progress(f"Agent: {role} {agent_name} failed to execute: {self._shorten_text(exc)}")
+            record_execution_failure(f"agent {agent_name} execution failed: {exc}", str(exc))
             raise RuntimeError(f"agent {agent_name} execution failed: {exc}") from exc
         finally:
+            if prompt_file is not None:
+                prompt_file.unlink(missing_ok=True)
             self._agent_output_redaction_values = previous_redaction_values
         if stream_agent_output:
             self._flush_agent_stream()
@@ -1098,24 +1160,7 @@ class WorkflowEngine:
                 self._rollback_read_only_changes(changed_path_keys, baseline, after, baseline_contents)
                 parse_error = self._policy_violation_message(agent_name, denied_paths)
                 call_result.parse_error = parse_error
-        call_result.metadata.update(
-            {
-                "selected_agent": original_agent_name,
-                "effective_agent": agent_name,
-                "requested_profile": self.state.state.execution_profile,
-                "effective_profile": self.execution_profile,
-                "execution_profile": self.execution_profile,
-                "effective_permission": self._effective_permission(agent),
-                "denied_commands": list(DENIED_COMMANDS),
-                "denied_git_subcommands": list(DENIED_GIT_SUBCOMMANDS),
-                "policy_bin": str(self.policy_bin_dir),
-                "policy_wrappers_active": self.policy_bin_dir.is_dir(),
-                "policy_preload_path": str(self.policy_bin_dir / POLICY_PRELOAD_NAME),
-                "policy_preload_active": (self.policy_bin_dir / POLICY_PRELOAD_NAME).is_file(),
-                "policy_retry_attempt": policy_retry_attempt,
-                "policy_retry_limit": self.config.workflow.max_policy_violation_retries,
-            }
-        )
+        call_result.metadata.update(policy_metadata)
         if stored_payload and parse_error is None:
             self._remember_agent_response(role, stored_payload)
 
@@ -1337,10 +1382,10 @@ class WorkflowEngine:
         if parse_error or not result.parsed_output:
             raise RuntimeError(parse_error or result.parse_error)
         advisor_response = AdvisorResponse.model_validate(result.parsed_output or {})
-        self.state.state.review_history.append("advisor-done")
-        self.state.write()
 
         if advisor_response.verdict == "block":
+            self.state.state.review_history.append("advisor-done")
+            self.state.write()
             self._mark(RunStatus.FAILED, "advisor-blocked", {"agent": advisor})
             self.state.state.last_error = "advisor-blocked"
             self.state.state.mark(RunStatus.FAILED, datetime.now(timezone.utc))
@@ -1373,13 +1418,15 @@ class WorkflowEngine:
             self.run_dir.plan_path.write_text(new_plan.model_dump_json(indent=2), encoding="utf-8")
             self._log(f"Revised plan to {len(new_plan.tasks)} task(s)")
 
+        self.state.state.review_history.append("advisor-done")
+        self.state.write()
         self._mark(RunStatus.ADVISOR_REVIEW, "advisor-complete")
         self.state.state.advisory_blocks += 1
         return advisor_response
 
-    async def _implement_plan(self, implementer: str, task: str, plan: OrchestratorPlan) -> None:
+    async def _implement_plan(self, implementer: str, task: str, plan: OrchestratorPlan) -> bool:
         if "implementer-complete" in self.state.state.review_history:
-            return
+            return True
         self._mark(RunStatus.IMPLEMENTING, "start-implementation")
         already = set(self.state.state.implemented_task_ids)
         for task_entry in plan.tasks:
@@ -1413,13 +1460,40 @@ class WorkflowEngine:
             if parse_error or not result.parsed_output:
                 raise RuntimeError(parse_error or result.parse_error)
             response = ImplementerResponse.model_validate(result.parsed_output or {})
-            if response.status != "completed" and response.remaining_issues:
-                self._mark(RunStatus.FAILED, "implementer-incomplete", {"task": task_entry.id})
+            if not self._validate_implementer_completed(
+                response,
+                "implementer-incomplete",
+                {"task": task_entry.id},
+            ):
+                return False
             self.state.state.implemented_task_ids.append(task_entry.id)
             self.state.write()
 
         self.state.state.review_history.append("implementer-complete")
         self._mark(RunStatus.IMPLEMENTING, "implementing-complete", {"count": len(self.state.state.implemented_task_ids)})
+        return True
+
+    def _validate_implementer_completed(
+        self,
+        response: ImplementerResponse,
+        event: str,
+        payload: Optional[Dict[str, object]] = None,
+    ) -> bool:
+        if response.status.strip().lower() == "completed":
+            return True
+
+        remaining = "; ".join(response.remaining_issues)
+        detail = remaining or response.summary or response.status
+        self.state.state.last_error = f"implementer incomplete: {detail}"
+        event_payload = dict(payload or {})
+        event_payload.update(
+            {
+                "status": response.status,
+                "remaining_issues": response.remaining_issues,
+            }
+        )
+        self._mark(RunStatus.FAILED, event, event_payload)
+        return False
 
     async def _review_and_fix(self, reviewer: str, implementer: str, task: str, max_rounds: int) -> bool:
         if "review-complete" in self.state.state.review_history:
@@ -1429,7 +1503,7 @@ class WorkflowEngine:
         if max_rounds <= 0:
             self.state.state.review_history.append("review-skipped")
             self.state.write()
-            self._mark(RunStatus.REVIEWING, "review-skipped", {"max_rounds": max_rounds})
+            self._mark(RunStatus.FINALIZING, "review-skipped", {"max_rounds": max_rounds})
             return True
 
         if round_idx >= max_rounds:
@@ -1477,15 +1551,22 @@ class WorkflowEngine:
                         "REQUIRED_FIXES": "\n".join(review.required_fixes),
                     },
                 )
-                _, parse_error2 = await self._run_agent(
+                fix_result, parse_error2 = await self._run_agent(
                     implementer,
                     "implementer",
                     RunStatus.FIXING,
                     fix_prompt,
                     ImplementerResponse,
                 )
-                if parse_error2:
-                    raise RuntimeError(parse_error2)
+                if parse_error2 or not fix_result.parsed_output:
+                    raise RuntimeError(parse_error2 or fix_result.parse_error)
+                fix_response = ImplementerResponse.model_validate(fix_result.parsed_output or {})
+                if not self._validate_implementer_completed(
+                    fix_response,
+                    "fix-incomplete",
+                    {"round": round_idx},
+                ):
+                    return False
                 self.state.state.review_history.append(f"review-fix-round-{round_idx}")
                 self.state.write()
                 self._mark(RunStatus.FIXING, "fixes-complete", {"round": round_idx})
@@ -1544,10 +1625,11 @@ class WorkflowEngine:
             return {"status": self.state.state.status.value, "message": "run already completed"}
 
         max_rounds = self.config.workflow.max_review_rounds if max_review_rounds is None else max_review_rounds
+        review_enabled = max_rounds > 0
         resolved_modes = self._resolve_modes(task, global_mode, role_modes)
         orchestrator = self._agent_for_role("orchestrator", mode=resolved_modes["orchestrator"])
         implementer = self._agent_for_role("implementer", mode=resolved_modes["implementer"])
-        reviewer = self._agent_for_role("reviewer", mode=resolved_modes["reviewer"])
+        reviewer = self._agent_for_role("reviewer", mode=resolved_modes["reviewer"]) if review_enabled else ""
         advisor = (
             None
             if no_advisor
@@ -1577,7 +1659,9 @@ class WorkflowEngine:
             f"Progress: Selected agents — {selected_preview}; modes: {mode_preview}; profile={self.execution_profile}."
         )
 
-        dirty_status = git_status_short(self.repo_root)
+        repository_git = self._is_git_worktree()
+        git_required_blocked = self.config.repository.require_git and not repository_git
+        dirty_status = git_status_short(self.repo_root) if repository_git else ""
         repository_dirty = bool(dirty_status.strip())
         clean_start_blocked = repository_dirty and self.config.repository.require_clean_start
 
@@ -1607,7 +1691,7 @@ class WorkflowEngine:
                     RunStatus.PLANNING.value,
                     RunStatus.ADVISOR_REVIEW.value if advisor else None,
                     RunStatus.IMPLEMENTING.value,
-                    RunStatus.REVIEWING.value,
+                    RunStatus.REVIEWING.value if review_enabled else None,
                     RunStatus.FINALIZING.value,
                 ],
                 "commands": dry_run_commands,
@@ -1617,11 +1701,26 @@ class WorkflowEngine:
                 "state_dir": str(self.run_dir.path),
                 "plan_exists": plan_exists,
                 "repo_status": dirty_status,
+                "repository_git": repository_git,
+                "require_git": self.config.repository.require_git,
                 "repository_dirty": repository_dirty,
                 "require_clean_start": self.config.repository.require_clean_start,
-                "would_fail": clean_start_blocked,
-                "failure_reason": "repository has uncommitted changes" if clean_start_blocked else None,
+                "would_fail": git_required_blocked or clean_start_blocked,
+                "failure_reason": (
+                    "repository is not a git worktree"
+                    if git_required_blocked
+                    else "repository has uncommitted changes"
+                    if clean_start_blocked
+                    else None
+                ),
             }
+
+        if git_required_blocked:
+            self._mark(RunStatus.RECEIVED, "git-required-missing", {"repo_root": str(self.repo_root)})
+            self.state.state.last_error = "repository is not a git worktree"
+            self.state.state.mark(RunStatus.FAILED, datetime.now(timezone.utc))
+            self.state.write()
+            return {"status": RunStatus.FAILED.value, "error": self.state.state.last_error}
 
         if repository_dirty:
             self._mark(RunStatus.RECEIVED, "dirty-repo", {"status": dirty_status})
@@ -1650,9 +1749,12 @@ class WorkflowEngine:
                 advisor_response = await self._run_advisor(advisor, task, plan)
                 if advisor_response and advisor_response.verdict == "block":
                     return await self._finalize()
+                if advisor_response and advisor_response.verdict == "revise":
+                    plan = OrchestratorPlan.model_validate_json(self.run_dir.plan_path.read_text(encoding="utf-8"))
 
         if "implementer-complete" not in self.state.state.review_history:
-            await self._implement_plan(implementer, task, plan)
+            if not await self._implement_plan(implementer, task, plan):
+                return await self._finalize()
 
         approved = await self._review_and_fix(reviewer, implementer, task, max_rounds)
 

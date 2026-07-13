@@ -5,13 +5,14 @@ from pathlib import Path
 import asyncio
 import os
 import subprocess
+import tempfile
 
 import pytest
 
 from agent_relay.config import AgentConfig, Config, OutputConfig, RepositoryConfig, WorkflowConfig
 from agent_relay.state import RunState, create_new_run
 from agent_relay.workflow import WorkflowEngine
-from agent_relay.models import ImplementerResponse, RunStatus
+from agent_relay.models import ImplementerResponse, OrchestratorPlan, RunStatus
 from agent_relay.policy import git_command, install_command_policy_wrappers, internal_subprocess_env
 from tests.helpers import write_fake_agent
 
@@ -83,7 +84,7 @@ def _build_config(fake_agent: Path, *, reviewer_sequence: str = "approve", revie
             reviewers=["reviewer"],
             max_total_agent_calls=20,
         ),
-        repository=RepositoryConfig(require_clean_start=require_clean),
+        repository=RepositoryConfig(require_git=False, require_clean_start=require_clean),
         output=OutputConfig(),
     )
 
@@ -101,6 +102,25 @@ def _single_read_only_agent_config(script: Path) -> Config:
         },
         workflow=WorkflowConfig(orchestrator="reader", implementers=["reader"], reviewers=["reader"]),
         output=OutputConfig(),
+    )
+
+
+def _single_file_transport_agent_config(script: Path, *, fail_agent: bool = False) -> Config:
+    return Config(
+        agents={
+            "implementer": AgentConfig(
+                name="implementer",
+                adapter="generic",
+                role="implementer",
+                permissions="read_write",
+                command=[str(script)],
+                prompt_transport="file",
+                environment_overrides={"FAIL_AGENT": "1" if fail_agent else "0"},
+            )
+        },
+        workflow=WorkflowConfig(orchestrator="implementer", implementers=["implementer"], reviewers=["implementer"]),
+        repository=RepositoryConfig(require_git=False),
+        output=OutputConfig(stream_agent_output=False),
     )
 
 
@@ -281,6 +301,53 @@ def test_fake_run_plans_and_reviews(tmp_path: Path):
     assert any(p.name.startswith("001-") for p in (run_dir.calls_dir).iterdir())
 
 
+@pytest.mark.parametrize(
+    ("remaining_issues", "expected_error_fragment"),
+    [
+        (["tests still failing"], "tests still failing"),
+        ([], "not done yet"),
+    ],
+)
+def test_implementer_incomplete_fails_without_marking_task_implemented(
+    tmp_path: Path, remaining_issues: list[str], expected_error_fragment: str
+):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    incomplete = tmp_path / "incomplete_implementer.py"
+    payload = {
+        "status": "incomplete",
+        "summary": "not done yet",
+        "files_changed": [],
+        "commands_run": [],
+        "tests": [],
+        "remaining_issues": remaining_issues,
+        "handoff_notes": [],
+    }
+    incomplete.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        f"print(json.dumps({json.dumps(payload)}))\n",
+        encoding="utf-8",
+    )
+    incomplete.chmod(0o755)
+    cfg = _build_config(fake, reviewer_sequence="approve")
+    cfg.agents["implementer"].command = [str(incomplete)]
+    run_dir = create_new_run(tmp_path, "run-incomplete", "Incomplete implementation", 20, {})
+    state = RunState.load(run_dir.state_path)
+
+    engine = WorkflowEngine(cfg, run_dir, state)
+    result = asyncio.run(engine.run("Incomplete implementation"))
+
+    assert result["status"] == "FAILED"
+    assert result["implemented"] == []
+    assert state.state.implemented_task_ids == []
+    assert state.state.review_round == 0
+    assert "implementer-complete" not in state.state.review_history
+    assert state.state.last_error is not None
+    assert "implementer incomplete" in state.state.last_error
+    assert expected_error_fragment in state.state.last_error
+
+
 def test_agent_output_streams_stdout_and_stderr_by_default(tmp_path: Path, capsys):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")
@@ -396,6 +463,137 @@ print("```")
     assert secret not in artifact_text
     assert "runtime api key: REDACTED" in (call_dir / "stdout.txt").read_text(encoding="utf-8")
     assert "received REDACTED" in (call_dir / "result.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(("fail_agent", "expected_parse_error"), [(False, None), (True, "agent exited with status 7")])
+def test_file_prompt_transport_cleans_temp_file_and_retains_prompt_artifact(
+    tmp_path: Path, monkeypatch, fail_agent: bool, expected_parse_error: str | None
+):
+    script = tmp_path / "file_transport_agent.py"
+    seen_prompt_path = tmp_path / "seen-prompt-path.txt"
+    script.write_text(
+        """#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+prompt_path = Path(sys.argv[1])
+prompt = prompt_path.read_text(encoding="utf-8")
+Path(os.environ["SEEN_PROMPT_PATH"]).write_text(str(prompt_path), encoding="utf-8")
+
+if os.environ["FAIL_AGENT"] == "1":
+    print("failed after reading file prompt")
+    raise SystemExit(7)
+
+print(json.dumps({
+    "status": "completed",
+    "summary": "read file prompt",
+    "files_changed": [],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [],
+    "handoff_notes": [],
+}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    prompt_temp_dir = tmp_path / "prompt-temp"
+    prompt_temp_dir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(prompt_temp_dir))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+
+    cfg = _single_file_transport_agent_config(script, fail_agent=fail_agent)
+    cfg.agents["implementer"].environment_overrides["SEEN_PROMPT_PATH"] = str(seen_prompt_path)
+    run_dir = create_new_run(tmp_path, f"run-file-transport-{fail_agent}", "File transport prompt", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, quiet=True)
+
+    call_result, parse_error = asyncio.run(
+        engine._run_agent(
+            "implementer",
+            "implementer",
+            RunStatus.IMPLEMENTING,
+            "File transport prompt body",
+            ImplementerResponse,
+            track_repo_diff=False,
+        )
+    )
+
+    assert parse_error == expected_parse_error
+    assert call_result.exit_code == (7 if fail_agent else 0)
+    used_prompt_path = Path(seen_prompt_path.read_text(encoding="utf-8"))
+    assert used_prompt_path.parent == prompt_temp_dir
+    assert not used_prompt_path.exists()
+    assert list(prompt_temp_dir.iterdir()) == []
+
+    call_prompt = (run_dir.calls_dir / "001-implementer" / "prompt.md").read_text(encoding="utf-8")
+    assert "File transport prompt body" in call_prompt
+    assert "Stringbean execution policy:" in call_prompt
+
+
+@pytest.mark.parametrize("failure_mode", ["timeout", "execution-exception"])
+def test_file_prompt_transport_retains_prompt_artifact_on_launch_failure(
+    tmp_path: Path, monkeypatch, failure_mode: str
+):
+    script = tmp_path / "file_transport_failure_agent.py"
+    seen_prompt_path = tmp_path / "seen-failure-prompt-path.txt"
+    script.write_text(
+        """#!/usr/bin/env python3
+import os
+import sys
+import time
+from pathlib import Path
+
+prompt_path = Path(sys.argv[1])
+Path(os.environ["SEEN_PROMPT_PATH"]).write_text(str(prompt_path), encoding="utf-8")
+time.sleep(10)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    prompt_temp_dir = tmp_path / f"prompt-temp-{failure_mode}"
+    prompt_temp_dir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(prompt_temp_dir))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+
+    cfg = _single_file_transport_agent_config(script)
+    cfg.agents["implementer"].environment_overrides["SEEN_PROMPT_PATH"] = str(seen_prompt_path)
+    if failure_mode == "timeout":
+        cfg.agents["implementer"].timeout_seconds = 0.2
+        expected_error = "timed out"
+    else:
+        cfg.agents["implementer"].working_directory = "missing-working-directory"
+        expected_error = "execution failed"
+
+    run_dir = create_new_run(tmp_path, f"run-file-transport-{failure_mode}", "File transport prompt", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, quiet=True)
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        asyncio.run(
+            engine._run_agent(
+                "implementer",
+                "implementer",
+                RunStatus.IMPLEMENTING,
+                "File transport prompt body",
+                ImplementerResponse,
+                track_repo_diff=False,
+            )
+        )
+
+    call_dir = run_dir.calls_dir / "001-implementer"
+    assert call_dir.joinpath("prompt.md").exists()
+    assert "File transport prompt body" in call_dir.joinpath("prompt.md").read_text(encoding="utf-8")
+    result_payload = json.loads(call_dir.joinpath("result.json").read_text(encoding="utf-8"))
+    assert expected_error in result_payload["parse_error"]
+    if seen_prompt_path.exists():
+        used_prompt_path = Path(seen_prompt_path.read_text(encoding="utf-8"))
+        assert not used_prompt_path.exists()
+    assert list(prompt_temp_dir.iterdir()) == []
 
 
 def test_codex_progress_prints_sanitized_stage_updates(tmp_path: Path, capsys):
@@ -579,21 +777,131 @@ def test_advisor_revision_leads_to_revised_plan(tmp_path: Path):
     assert result["status"] == "COMPLETED"
     plan = json.loads((run_dir.path / "plan.json").read_text(encoding="utf-8"))
     assert len(plan["tasks"]) == 2
+    assert "task-2" in state.state.implemented_task_ids
 
 
-def test_reviewer_requests_changes_and_gets_fix_round(tmp_path: Path):
+def test_advisor_done_not_recorded_when_plan_revision_fails(tmp_path: Path):
+    script = tmp_path / "advisor_revision_fail.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+
+role = os.environ.get("AGENT_ROLE", "planner")
+if role == "advisor":
+    print(json.dumps({
+        "verdict": "revise",
+        "severity": "medium",
+        "summary": "revise the plan",
+        "blockers": [],
+        "concerns": ["needs revision"],
+        "recommendations": ["revise"]
+    }))
+elif role == "planner":
+    if os.environ.get("PLAN_REVISION_ENABLED") == "1":
+        print("revision failed")
+        raise SystemExit(7)
+    print(json.dumps({
+        "summary": "plan",
+        "assumptions": [],
+        "tasks": [],
+        "risks": [],
+        "advisor_questions": []
+    }))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    cfg = _build_config(script, advisor_role="advisor", planner_role="planner")
+    run_dir = create_new_run(tmp_path, "run-advisor-revision-fails", "Revise plan", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+    plan = OrchestratorPlan.model_validate(
+        {
+            "summary": "plan",
+            "assumptions": [],
+            "tasks": [],
+            "risks": [],
+            "advisor_questions": [],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="agent exited with status 7"):
+        asyncio.run(engine._run_advisor("advisor", "Revise plan", plan))
+
+    assert "advisor-done" not in state.state.review_history
+
+
+@pytest.mark.parametrize(
+    ("fix_status", "expected_status", "expected_reviewer_calls"),
+    [
+        ("completed", "COMPLETED", 2),
+        ("failed", "FAILED", 1),
+    ],
+)
+def test_reviewer_requests_changes_and_gets_fix_round(
+    tmp_path: Path, fix_status: str, expected_status: str, expected_reviewer_calls: int
+):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")
     cfg = _build_config(fake, reviewer_sequence="changes_requested,approve")
+    fake_state = tmp_path.parent / f"{tmp_path.name}-fake-state.json"
+    for agent in cfg.agents.values():
+        agent.environment_overrides["STRINGBEAN_FAKE_STATE_PATH"] = str(fake_state)
+
+    implementer = tmp_path / "fix_status_implementer.py"
+    implementer.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+
+state = pathlib.Path(os.environ["STRINGBEAN_FAKE_STATE_PATH"])
+values = json.loads(state.read_text(encoding="utf-8")) if state.exists() else {}
+call = int(values.get("implementer", 0)) + 1
+values["implementer"] = call
+state.write_text(json.dumps(values), encoding="utf-8")
+
+status = "completed" if call == 1 else os.environ["FIX_STATUS"]
+if status == "completed":
+    pathlib.Path("implemented.txt").write_text(f"updated by implementer #{call}\\n", encoding="utf-8")
+
+print(json.dumps({
+    "status": status,
+    "summary": f"done #{call}" if status == "completed" else "fix failed",
+    "files_changed": ["implemented.txt"] if status == "completed" else [],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [] if status == "completed" else ["fix pass failed"],
+    "handoff_notes": [],
+}))
+""",
+        encoding="utf-8",
+    )
+    implementer.chmod(0o755)
+    cfg.agents["implementer"].command = [str(implementer)]
+    cfg.agents["implementer"].environment_overrides["FIX_STATUS"] = fix_status
     run_dir = create_new_run(tmp_path, "run-3", "Fixes needed", 20, {})
     state = RunState.load(run_dir.state_path)
 
     engine = WorkflowEngine(cfg, run_dir, state)
     result = asyncio.run(engine.run("Fixes needed"))
 
-    assert result["status"] == "COMPLETED"
-    assert result["review_round"] >= 2
-    assert state.state.review_round >= 2
+    counts = json.loads(fake_state.read_text(encoding="utf-8"))
+    assert result["status"] == expected_status
+    assert counts["reviewer"] == expected_reviewer_calls
+    if fix_status == "completed":
+        assert result["review_round"] >= 2
+        assert state.state.review_round >= 2
+        assert "review-fix-round-1" in state.state.review_history
+    else:
+        assert result["review_round"] == 1
+        assert state.state.review_round == 1
+        assert "review-fix-round-1" not in state.state.review_history
+        assert "review-complete" not in state.state.review_history
+        assert state.state.last_error is not None
+        assert "implementer incomplete" in state.state.last_error
+        assert "fix pass failed" in state.state.last_error
 
 
 def test_reviewer_max_round_enforcement(tmp_path: Path):
@@ -610,6 +918,45 @@ def test_reviewer_max_round_enforcement(tmp_path: Path):
     assert result["status"] == "FAILED"
     assert state.state.last_error in {"max review rounds exceeded", "reviewer rejected", "reviewer did not approve"}
     assert state.state.review_round == 1
+
+
+def test_configured_zero_review_rounds_skips_reviewer(tmp_path: Path):
+    fake = tmp_path / "agent.sh"
+    fake_state = tmp_path / "fake-state.json"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake, reviewer_sequence="approve")
+    cfg.workflow.advisors = []
+    cfg.workflow.reviewers = []
+    cfg.workflow.max_review_rounds = 0
+    del cfg.agents["reviewer"]
+    for agent in cfg.agents.values():
+        agent.environment_overrides["STRINGBEAN_FAKE_STATE_PATH"] = str(fake_state)
+    run_dir = create_new_run(tmp_path, "run-zero-review", "Skip review", 20, {})
+    state = RunState.load(run_dir.state_path)
+
+    engine = WorkflowEngine(cfg, run_dir, state)
+    dry_run = asyncio.run(engine.run("Skip review", dry_run=True))
+    assert dry_run["selected_agents"]["reviewer"] == ""
+    assert "reviewer" not in dry_run["commands"]
+    assert RunStatus.REVIEWING.value not in dry_run["stages"]
+
+    result = asyncio.run(engine.run("Skip review"))
+
+    counts = json.loads(fake_state.read_text(encoding="utf-8"))
+    assert result["status"] == "COMPLETED"
+    assert result["review_round"] == 0
+    assert counts["planner"] == 1
+    assert counts["implementer"] == 1
+    assert "reviewer" not in counts
+    assert "review-skipped" in state.state.review_history
+    assert RunStatus.REVIEWING not in state.state.completed_stages
+    events = [
+        json.loads(line)
+        for line in run_dir.events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert not any(event["stage"] == RunStatus.REVIEWING.value for event in events)
+    assert any(event["event"] == "review-skipped" and event["stage"] == RunStatus.FINALIZING.value for event in events)
 
 
 def test_read_only_agent_cannot_modify(tmp_path: Path):
@@ -1480,6 +1827,33 @@ def test_dry_run_reports_clean_start_blocker_without_rewriting_state_or_task_fil
     assert "dirty.txt" in result["repo_status"]
     assert run_dir.state_path.read_bytes() == before_state
     assert run_dir.task_path.read_bytes() == before_task
+
+
+def test_require_git_blocks_non_git_repository_without_rewriting_task(tmp_path: Path):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    cfg.repository.require_git = True
+    run_dir = create_new_run(tmp_path, "run-require-git", "Requires git", 20, {})
+    before_state = run_dir.state_path.read_bytes()
+
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+    dry_run = asyncio.run(engine.run("Requires git", dry_run=True))
+
+    assert dry_run["dry_run"] is True
+    assert dry_run["repository_git"] is False
+    assert dry_run["require_git"] is True
+    assert dry_run["would_fail"] is True
+    assert dry_run["failure_reason"] == "repository is not a git worktree"
+    assert run_dir.state_path.read_bytes() == before_state
+    assert not run_dir.task_path.exists()
+
+    result = asyncio.run(engine.run("Requires git"))
+
+    assert result == {"status": "FAILED", "error": "repository is not a git worktree"}
+    assert state.state.last_error == "repository is not a git worktree"
+    assert not run_dir.task_path.exists()
 
 
 def test_prevent_concurrent_write_agents_by_sequential_calls(tmp_path: Path):

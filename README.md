@@ -300,6 +300,31 @@ Roles: `orchestrator`, `advisor`, `implementer`, `reviewer`, `tester`, `research
 Permissions: `read_only` or `read_write`
 Optional `mode: high|medium|low` for mode-based agent selection.
 
+### Workflow and repository fields
+
+Active workflow fields:
+
+- `orchestrator`: agent name used for planning.
+- `advisors`: optional read-only agents used before implementation when `advisor_policy: before_implementation`.
+- `implementers`: write-capable agents used for plan tasks and review fixes.
+- `reviewers`: read-only agents used for review rounds.
+- `advisor_policy`: `before_implementation` or `never`.
+- `max_review_rounds`: review/fix loop limit; `0` skips review.
+- `max_total_agent_calls`: total subprocess agent call limit.
+- `max_policy_violation_retries`: retry limit after read-only policy violations.
+
+Active repository fields:
+
+- `require_clean_start`: when `true`, dirty repositories fail before agents run.
+
+Reserved config fields are accepted for forward compatibility but are not implemented yet. Non-default values emit `UnsupportedConfigWarning` so they are not silently ignored:
+
+- `workflow.testers`
+- `workflow.researcher`
+- `workflow.parallel_read_only_agents`
+- `workflow.parallel_write_agents`
+- `repository.create_checkpoint_commits`
+
 ### Generic adapter example
 
 ```yaml

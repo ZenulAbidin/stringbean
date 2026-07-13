@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -92,8 +92,13 @@ class OrchestratorPlan(BaseModel):
     advisor_questions: List[str] = Field(default_factory=list)
 
 
+AdvisorVerdict = Literal["approve", "revise", "block"]
+ImplementerStatus = Literal["completed", "incomplete", "failed"]
+ReviewerVerdict = Literal["approve", "changes_requested", "reject"]
+
+
 class AdvisorResponse(BaseModel):
-    verdict: str
+    verdict: AdvisorVerdict
     severity: str = "none"
     summary: str
     blockers: List[str] = Field(default_factory=list)
@@ -107,7 +112,7 @@ class AdvisorResponse(BaseModel):
 
 
 class ImplementerResponse(BaseModel):
-    status: str
+    status: ImplementerStatus
     summary: str
     files_changed: List[str] = Field(default_factory=list)
     commands_run: List[str] = Field(default_factory=list)
@@ -122,7 +127,7 @@ class ImplementerResponse(BaseModel):
 
 
 class ReviewerResponse(BaseModel):
-    verdict: str
+    verdict: ReviewerVerdict
     summary: str
     blocking_issues: List[str] = Field(default_factory=list)
     non_blocking_issues: List[str] = Field(default_factory=list)

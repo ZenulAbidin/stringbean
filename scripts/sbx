@@ -207,6 +207,7 @@ resolve_python() {
   return 1
 }
 
+INVOCATION_DIR="$(pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT_DIR=""
@@ -257,7 +258,7 @@ run_cli() {
     exit 1
   fi
 
-  cd "$ROOT_DIR"
+  cd "$INVOCATION_DIR"
   PYTHONPATH="$ROOT_DIR/src" "$python_bin" -c 'import sys; from agent_relay.cli import main; sys.argv = ["stringbean", *sys.argv[1:]]; raise SystemExit(main())' "$@"
 }
 

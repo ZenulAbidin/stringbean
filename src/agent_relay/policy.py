@@ -51,6 +51,7 @@ DENIED_GIT_SUBCOMMANDS: tuple[str, ...] = (
 _REAL_GIT: str | None = None
 POLICY_BIN_SENTINEL = ".stringbean-policy-bin"
 POLICY_PRELOAD_NAME = "libstringbean_policy.so"
+POLICY_ENV_PREFIX = "STRINGBEAN_POLICY_"
 
 
 def _is_policy_bin_entry(path_entry: str) -> bool:
@@ -74,10 +75,38 @@ def path_without_policy_bins(path: str | None = None) -> str:
     return os.pathsep.join(part for part in raw_path.split(os.pathsep) if not _is_policy_bin_entry(part))
 
 
+def _is_policy_preload_entry(preload_entry: str, env: Mapping[str, str]) -> bool:
+    if not preload_entry:
+        return False
+    configured_preload = env.get("STRINGBEAN_POLICY_PRELOAD")
+    if configured_preload and preload_entry == configured_preload:
+        return True
+    path = Path(preload_entry)
+    if path.name != POLICY_PRELOAD_NAME:
+        return False
+    return _is_policy_bin_entry(str(path.parent))
+
+
+def ld_preload_without_policy_entries(ld_preload: str | None, env: Mapping[str, str]) -> str:
+    """Return LD_PRELOAD with Stringbean policy preload entries removed."""
+    if not ld_preload:
+        return ""
+    entries = [entry for group in ld_preload.split() for entry in group.split(os.pathsep) if entry]
+    return " ".join(entry for entry in entries if not _is_policy_preload_entry(entry, env))
+
+
 def internal_subprocess_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Environment for Stringbean-owned subprocesses that must not use policy wrappers."""
     out = dict(os.environ if env is None else env)
     out["PATH"] = path_without_policy_bins(out.get("PATH", ""))
+    cleaned_preload = ld_preload_without_policy_entries(out.get("LD_PRELOAD"), out)
+    if cleaned_preload:
+        out["LD_PRELOAD"] = cleaned_preload
+    else:
+        out.pop("LD_PRELOAD", None)
+    for name in tuple(out):
+        if name.startswith(POLICY_ENV_PREFIX):
+            out.pop(name, None)
     return out
 
 

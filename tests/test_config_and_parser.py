@@ -10,7 +10,16 @@ import sys
 import pytest
 
 import agent_relay.policy as policy
-from agent_relay.config import AgentConfig, Config, RepositoryConfig, WorkflowConfig, OutputConfig, load_config, save_config
+from agent_relay.config import (
+    AgentConfig,
+    Config,
+    OutputConfig,
+    RepositoryConfig,
+    UnsupportedConfigWarning,
+    WorkflowConfig,
+    load_config,
+    save_config,
+)
 from agent_relay.policy import (
     POLICY_PRELOAD_NAME,
     apply_codex_execution_profile,
@@ -20,7 +29,7 @@ from agent_relay.policy import (
     path_without_policy_bins,
 )
 from agent_relay.parser import parse_structured_output
-from agent_relay.models import ImplementerResponse, OrchestratorPlan, ReviewerResponse
+from agent_relay.models import AdvisorResponse, ImplementerResponse, OrchestratorPlan, ReviewerResponse
 from agent_relay.runner import RunnerConfig, run_subprocess
 def test_config_roundtrip_and_validation(tmp_path: Path):
     cfg = Config(
@@ -43,6 +52,45 @@ def test_config_roundtrip_and_validation(tmp_path: Path):
     loaded = load_config(path)
     assert loaded.agents["local"].name == "local"
     assert loaded.workflow.orchestrator == "local"
+
+
+def test_workflow_config_allows_zero_review_rounds():
+    cfg = WorkflowConfig(orchestrator="local", max_review_rounds=0)
+
+    assert cfg.max_review_rounds == 0
+
+
+def test_reserved_workflow_contracts_warn_when_non_default(recwarn):
+    cfg = WorkflowConfig(
+        orchestrator="local",
+        testers=["qa"],
+        researcher=["research"],
+        parallel_read_only_agents=True,
+        parallel_write_agents=True,
+    )
+
+    assert cfg.testers == ["qa"]
+    messages = [
+        str(warning.message)
+        for warning in recwarn
+        if issubclass(warning.category, UnsupportedConfigWarning)
+    ]
+    assert any("workflow.testers is reserved" in message for message in messages)
+    assert any("workflow.researcher is reserved" in message for message in messages)
+    assert any("workflow.parallel_read_only_agents is reserved" in message for message in messages)
+    assert any("workflow.parallel_write_agents is reserved" in message for message in messages)
+
+
+def test_reserved_repository_contract_warns_when_enabled(recwarn):
+    cfg = RepositoryConfig(create_checkpoint_commits=True)
+
+    assert cfg.create_checkpoint_commits is True
+    messages = [
+        str(warning.message)
+        for warning in recwarn
+        if issubclass(warning.category, UnsupportedConfigWarning)
+    ]
+    assert any("repository.create_checkpoint_commits is reserved" in message for message in messages)
 
 
 def test_generic_command_construction_from_config(tmp_path: Path):
@@ -120,6 +168,92 @@ def test_reviewer_response_coerces_structured_issues():
     assert parsed.required_fixes == ["Remove unrelated edits"]
 
 
+@pytest.mark.parametrize(
+    ("model", "payload", "field", "bad_value"),
+    [
+        (
+            AdvisorResponse,
+            {
+                "verdict": "looks_good",
+                "summary": "unexpected advisor verdict",
+            },
+            "verdict",
+            "looks_good",
+        ),
+        (
+            ReviewerResponse,
+            {
+                "verdict": "revise",
+                "summary": "unexpected reviewer verdict",
+            },
+            "verdict",
+            "revise",
+        ),
+        (
+            ImplementerResponse,
+            {
+                "status": "done",
+                "summary": "unexpected implementer status",
+            },
+            "status",
+            "done",
+        ),
+    ],
+)
+def test_agent_response_models_reject_unknown_verdicts_and_statuses(model, payload, field, bad_value):
+    with pytest.raises(ValueError) as exc_info:
+        model.model_validate(payload)
+
+    message = str(exc_info.value)
+    assert field in message
+    assert bad_value in message
+    assert "Input should be" in message
+
+
+@pytest.mark.parametrize(
+    ("model", "payload", "field", "bad_value"),
+    [
+        (
+            AdvisorResponse,
+            {
+                "verdict": "continue",
+                "summary": "unexpected advisor verdict",
+            },
+            "verdict",
+            "continue",
+        ),
+        (
+            ReviewerResponse,
+            {
+                "verdict": "needs_work",
+                "summary": "unexpected reviewer verdict",
+            },
+            "verdict",
+            "needs_work",
+        ),
+        (
+            ImplementerResponse,
+            {
+                "status": "success",
+                "summary": "unexpected implementer status",
+            },
+            "status",
+            "success",
+        ),
+    ],
+)
+def test_parser_returns_clear_error_for_unknown_verdicts_and_statuses(model, payload, field, bad_value):
+    parsed, raw, err = parse_structured_output(json.dumps(payload), model)
+
+    assert parsed is None
+    assert raw == {"raw": json.dumps(payload)}
+    assert err is not None
+    assert err.startswith("fallback-json-parse-failed:")
+    assert field in err
+    assert bad_value in err
+    assert "Input should be" in err
+
+
 def test_invalid_mode_rejected():
     try:
         AgentConfig(
@@ -153,7 +287,7 @@ def test_execution_profile_default_is_rw():
 
 def test_policy_wrapper_blocks_denied_command(tmp_path: Path):
     policy_bin = install_command_policy_wrappers(tmp_path, denied_commands=("blocked-tool",))
-    env = dict(os.environ)
+    env = internal_subprocess_env()
     env["PATH"] = f"{policy_bin}{os.pathsep}{env.get('PATH', '')}"
 
     proc = subprocess.run(["blocked-tool", "--version"], env=env, capture_output=True, text=True, check=False)
@@ -270,7 +404,7 @@ def test_policy_preload_denies_absolute_child_command_before_execution(tmp_path:
     alias = tmp_path / "safe-tool"
     alias.symlink_to(blocked)
 
-    env = dict(os.environ)
+    env = internal_subprocess_env()
     env["LD_PRELOAD"] = str(preload)
     env["STRINGBEAN_DENIED_COMMANDS"] = "blocked-tool"
     env["STRINGBEAN_DENIED_GIT_SUBCOMMANDS"] = "zap"
@@ -301,6 +435,154 @@ def test_policy_preload_denies_absolute_child_command_before_execution(tmp_path:
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("launcher", ["execve", "execvpe", "posix_spawn"])
+@pytest.mark.parametrize("target_kind", ["command", "git"])
+def test_policy_preload_enforces_when_child_env_omits_policy_markers(
+    tmp_path: Path, launcher: str, target_kind: str
+):
+    if launcher == "posix_spawn" and not hasattr(os, "posix_spawn"):
+        pytest.skip("os.posix_spawn is not available on this platform")
+
+    policy_bin = install_command_policy_wrappers(
+        tmp_path / "policy",
+        denied_commands=("blocked-tool",),
+        denied_git_subcommands=("zap",),
+    )
+    preload = policy_bin / POLICY_PRELOAD_NAME
+    if not preload.is_file():
+        pytest.skip("policy preload library was not built on this platform")
+
+    marker = tmp_path / f"{launcher}-{target_kind}-ran.txt"
+    blocked = tmp_path / ("blocked-tool" if target_kind == "command" else "git")
+    blocked.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n"
+        "sys.exit(33)\n",
+        encoding="utf-8",
+    )
+    blocked.chmod(0o755)
+    command_path = blocked
+    if target_kind == "command":
+        command_path = tmp_path / "safe-tool"
+        command_path.symlink_to(blocked)
+
+    executable = command_path.name if launcher == "execvpe" else str(command_path)
+    argv = [executable, "zap"] if target_kind == "git" else [executable]
+    env = internal_subprocess_env()
+    env["LD_PRELOAD"] = str(preload)
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env.get('PATH', '')}"
+    env["STRINGBEAN_DENIED_COMMANDS"] = "blocked-tool"
+    env["STRINGBEAN_DENIED_GIT_SUBCOMMANDS"] = "zap"
+    assert not any(name.startswith("STRINGBEAN_POLICY_") for name in env)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import errno, os, sys\n"
+                f"launcher = {launcher!r}\n"
+                f"executable = {executable!r}\n"
+                f"argv = {argv!r}\n"
+                "child_env = {'PATH': os.environ['PATH']}\n"
+                "try:\n"
+                "    if launcher == 'execve':\n"
+                "        os.execve(executable, argv, child_env)\n"
+                "    elif launcher == 'execvpe':\n"
+                "        os.execvpe(executable, argv, child_env)\n"
+                "    else:\n"
+                "        pid = os.posix_spawn(executable, argv, child_env)\n"
+                "        os.waitpid(pid, 0)\n"
+                "        sys.exit(99)\n"
+                "except PermissionError as exc:\n"
+                "    sys.stderr.write(str(exc))\n"
+                "    sys.exit(0)\n"
+                "except OSError as exc:\n"
+                "    sys.stderr.write(str(exc))\n"
+                "    sys.exit(0 if exc.errno == errno.EACCES else 1)\n"
+            ),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    assert "Permission denied" in proc.stderr or "denied for subagents" in proc.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("launcher", ["execve", "execvpe", "posix_spawn", "fork_execve"])
+def test_policy_preload_allows_process_launch_for_allowed_targets(tmp_path: Path, launcher: str):
+    if launcher == "posix_spawn" and not hasattr(os, "posix_spawn"):
+        pytest.skip("os.posix_spawn is not available on this platform")
+    if launcher == "fork_execve" and not hasattr(os, "fork"):
+        pytest.skip("os.fork is not available on this platform")
+
+    policy_bin = install_command_policy_wrappers(tmp_path / "policy", denied_commands=("blocked-tool",))
+    preload = policy_bin / POLICY_PRELOAD_NAME
+    if not preload.is_file():
+        pytest.skip("policy preload library was not built on this platform")
+
+    marker = tmp_path / f"{launcher}-allowed-ran.txt"
+    allowed = tmp_path / "allowed-tool"
+    allowed.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n"
+        "sys.exit(33)\n",
+        encoding="utf-8",
+    )
+    allowed.chmod(0o755)
+
+    executable = allowed.name if launcher == "execvpe" else str(allowed)
+    argv = [executable]
+    env = internal_subprocess_env()
+    env["LD_PRELOAD"] = str(preload)
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env.get('PATH', '')}"
+    env["STRINGBEAN_DENIED_COMMANDS"] = "blocked-tool"
+    env["STRINGBEAN_DENIED_GIT_SUBCOMMANDS"] = "zap"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys\n"
+                f"launcher = {launcher!r}\n"
+                f"executable = {executable!r}\n"
+                f"argv = {argv!r}\n"
+                "child_env = dict(os.environ)\n"
+                "if launcher == 'execve':\n"
+                "    os.execve(executable, argv, child_env)\n"
+                "elif launcher == 'execvpe':\n"
+                "    os.execvpe(executable, argv, child_env)\n"
+                "elif launcher == 'posix_spawn':\n"
+                "    pid = os.posix_spawn(executable, argv, child_env)\n"
+                "    _, status = os.waitpid(pid, 0)\n"
+                "    sys.exit(os.waitstatus_to_exitcode(status))\n"
+                "else:\n"
+                "    pid = os.fork()\n"
+                "    if pid == 0:\n"
+                "        os.execve(executable, argv, child_env)\n"
+                "    _, status = os.waitpid(pid, 0)\n"
+                "    sys.exit(os.waitstatus_to_exitcode(status))\n"
+            ),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 33
+    assert marker.read_text(encoding="utf-8") == "ran"
+
+
 def test_policy_wrapper_uses_real_git_when_path_is_already_wrapped(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(policy, "_REAL_GIT", None)
     first_policy_bin = install_command_policy_wrappers(tmp_path / "first")
@@ -318,6 +600,28 @@ def test_policy_wrapper_uses_real_git_when_path_is_already_wrapped(tmp_path: Pat
 
     assert allowed.returncode == 0
     assert "git version" in allowed.stdout
+
+
+def test_internal_subprocess_env_strips_policy_preload_and_policy_markers(tmp_path: Path):
+    policy_bin = install_command_policy_wrappers(tmp_path / "policy")
+    preload = policy_bin / POLICY_PRELOAD_NAME
+    unrelated_preload = tmp_path / "libcustom.so"
+    env = {
+        "PATH": f"{policy_bin}{os.pathsep}/usr/bin",
+        "LD_PRELOAD": f"{preload}{os.pathsep}{unrelated_preload}",
+        "STRINGBEAN_POLICY_BIN": str(policy_bin),
+        "STRINGBEAN_POLICY_PRELOAD": str(preload),
+        "STRINGBEAN_POLICY_PRELOAD_ACTIVE": "1",
+        "STRINGBEAN_POLICY_WRAPPERS_ACTIVE": "1",
+        "STRINGBEAN_DENIED_COMMANDS": "blocked-tool",
+    }
+
+    cleaned = internal_subprocess_env(env)
+
+    assert cleaned["PATH"] == "/usr/bin"
+    assert cleaned["LD_PRELOAD"] == str(unrelated_preload)
+    assert "STRINGBEAN_DENIED_COMMANDS" in cleaned
+    assert not any(name.startswith("STRINGBEAN_POLICY_") for name in cleaned)
 
 
 def test_path_without_policy_bins_removes_legacy_wrapper_without_sentinel(tmp_path: Path):
@@ -352,7 +656,7 @@ def _install_fake_git_policy_wrapper(tmp_path: Path, monkeypatch) -> tuple[dict[
     policy_bin = install_command_policy_wrappers(tmp_path / "policy")
 
     args_file = tmp_path / "fake-git-args.txt"
-    env = dict(os.environ)
+    env = internal_subprocess_env()
     env["FAKE_GIT_ARGS"] = str(args_file)
     env["PATH"] = f"{policy_bin}{os.pathsep}{env.get('PATH', '')}"
     return env, args_file

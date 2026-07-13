@@ -1,16 +1,29 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 PROJECT_NAME = "stringbean"
 PROJECT_DIR_NAME = f".{PROJECT_NAME}"
 CONFIG_FILE_NAME = "config.yaml"
 RUN_DIR_NAME = "runs"
+
+
+class UnsupportedConfigWarning(UserWarning):
+    """Warning emitted when accepted config has no runtime implementation yet."""
+
+
+def _warn_reserved_config(field: str, detail: str) -> None:
+    warnings.warn(
+        f"{field} is reserved and currently has no effect. {detail}",
+        UnsupportedConfigWarning,
+        stacklevel=3,
+    )
 
 
 class FileResourceMixin:
@@ -99,7 +112,7 @@ class WorkflowConfig(BaseModel):
     max_review_rounds: int = 2
     max_total_agent_calls: int = 20
     max_policy_violation_retries: int = 2
-    parallel_read_only_agents: bool = True
+    parallel_read_only_agents: bool = False
     parallel_write_agents: bool = False
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
@@ -111,7 +124,14 @@ class WorkflowConfig(BaseModel):
             raise ValueError("advisor_policy must be before_implementation or never")
         return value
 
-    @field_validator("max_review_rounds", "max_total_agent_calls")
+    @field_validator("max_review_rounds")
+    @classmethod
+    def _validate_non_negative_review_rounds(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("workflow.max_review_rounds must be 0 or higher")
+        return int(value)
+
+    @field_validator("max_total_agent_calls")
     @classmethod
     def _validate_positive_int(cls, value: int) -> int:
         if value <= 0:
@@ -125,11 +145,38 @@ class WorkflowConfig(BaseModel):
             raise ValueError("workflow.max_policy_violation_retries must be 0 or higher")
         return int(value)
 
+    @model_validator(mode="after")
+    def _warn_reserved_contracts(self) -> "WorkflowConfig":
+        if self.testers:
+            _warn_reserved_config("workflow.testers", "Tester agents are not scheduled by the current workflow.")
+        if self.researcher:
+            _warn_reserved_config("workflow.researcher", "Researcher agents are not scheduled by the current workflow.")
+        if self.parallel_read_only_agents is not False:
+            _warn_reserved_config(
+                "workflow.parallel_read_only_agents",
+                "Agent execution is sequential in the current workflow.",
+            )
+        if self.parallel_write_agents is not False:
+            _warn_reserved_config(
+                "workflow.parallel_write_agents",
+                "Write-capable agent execution is serialized in the current workflow.",
+            )
+        return self
+
 
 class RepositoryConfig(BaseModel):
     require_git: bool = True
     require_clean_start: bool = False
     create_checkpoint_commits: bool = False
+
+    @model_validator(mode="after")
+    def _warn_reserved_contracts(self) -> "RepositoryConfig":
+        if self.create_checkpoint_commits:
+            _warn_reserved_config(
+                "repository.create_checkpoint_commits",
+                "Stringbean does not create checkpoint commits.",
+            )
+        return self
 
 
 class OutputConfig(BaseModel):

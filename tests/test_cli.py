@@ -48,6 +48,46 @@ def test_sbx_accepts_unquoted_prompt_words():
     assert "'execution_profile': 'rw'" in result.stdout
 
 
+def test_sbx_script_targets_invocation_directory_not_stringbean_source(tmp_path: Path):
+    source_repo = Path(__file__).resolve().parents[1]
+    target_repo = tmp_path / "target-repo"
+    target_repo.mkdir()
+    run_id = f"target-cwd-probe-{tmp_path.name}"
+    subprocess.run(["git", "init"], cwd=target_repo, check=True, capture_output=True)
+    (target_repo / "target-marker.txt").write_text("target repo marker\n", encoding="utf-8")
+
+    init = subprocess.run(
+        [str(source_repo / "scripts" / "stringbean"), "init", "--force", "--preset", "C"],
+        cwd=target_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert init.returncode == 0, init.stderr
+
+    result = subprocess.run(
+        [
+            str(source_repo / "scripts" / "sbx"),
+            "verify",
+            "target",
+            "cwd",
+            "--dry-run",
+            "--quiet",
+            "--run-id",
+            run_id,
+        ],
+        cwd=target_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "target-marker.txt" in result.stdout
+    assert (tmp_path / ".stringbean" / "runs" / run_id / "state.json").exists()
+    assert not (source_repo / ".stringbean" / "runs" / run_id).exists()
+
+
 def test_sbx_codex_final_emits_sentinel_block():
     repo = Path(__file__).resolve().parents[1]
     result = subprocess.run(

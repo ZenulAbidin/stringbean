@@ -625,6 +625,7 @@ def _run_engine(
         execution_profile=execution_profile,
         codex_progress=codex_progress,
         progress_interval_seconds=progress_interval_seconds,
+        repo_root=root,
     )
     summary = asyncio.run(
         engine.run(
@@ -934,7 +935,15 @@ def resume(
     _apply_output_flags(cfg, quiet=quiet, no_agent_stream=no_agent_stream)
 
     run_dir = RunDirectory(root, run_id)
-    engine = WorkflowEngine(cfg, run_dir, state, console=console, quiet=quiet, execution_profile=resolved_execution_profile)
+    engine = WorkflowEngine(
+        cfg,
+        run_dir,
+        state,
+        console=console,
+        quiet=quiet,
+        execution_profile=resolved_execution_profile,
+        repo_root=root,
+    )
     try:
         result = asyncio.run(
             engine.run(
