@@ -978,7 +978,17 @@ def run(
             progress_interval_seconds=codex_progress_interval,
         )
     except Exception as exc:
-        _print_run_failure(selected_run_id, task, exc)
+        if codex_final:
+            _print_codex_final_summary(
+                {
+                    "status": "FAILED",
+                    "errors": str(exc),
+                    "event_log": str(RunDirectory(_project_root(), selected_run_id).events_path),
+                },
+                dry_run=False,
+            )
+        else:
+            _print_run_failure(selected_run_id, task, exc)
         raise typer.Exit(code=1) from exc
     if not codex_final:
         _print_labeled("Run ID", str(out["run_id"]))
