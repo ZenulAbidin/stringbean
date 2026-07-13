@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code plugin runs now use the native `Monitor` tool so intermediate Stringbean lines remain visible throughout long runs, with an incremental background-task fallback where Monitor is unavailable.
+- Read-only Linux agents now have workspace mutations denied before they happen; ignored build trees use metadata-only baseline checks instead of eagerly hashing file contents.
+- Claude presets now use the supported `opus`, `sonnet`, and `haiku` aliases with appropriate effort levels, while legacy pinned or invalid model names are normalized at runtime.
+
 ## [0.2.0] - 2026-07-13
 
 ### Changed

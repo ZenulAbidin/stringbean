@@ -22,6 +22,8 @@ from agent_relay.config import (
 )
 from agent_relay.policy import (
     POLICY_PRELOAD_NAME,
+    POLICY_WRITE_DENIAL_PREFIX,
+    POLICY_WRITE_MODE_READ_ONLY,
     apply_codex_execution_profile,
     install_command_policy_wrappers,
     internal_subprocess_env,
@@ -259,7 +261,7 @@ def test_claude_adapter_uses_noninteractive_stream_json(tmp_path: Path):
     assert not adapter.supports_prompt_transport("file")
 
 
-def test_claude_adapter_uses_configured_model_when_command_is_implicit(tmp_path: Path):
+def test_claude_adapter_normalizes_legacy_configured_model_when_command_is_implicit(tmp_path: Path):
     from agent_relay.adapters import ClaudeAdapter
 
     cfg = AgentConfig(
@@ -276,12 +278,43 @@ def test_claude_adapter_uses_configured_model_when_command_is_implicit(tmp_path:
     assert adapter.build_command("prompt", tmp_path) == [
         "claude",
         "--model",
-        "claude-fable-5",
+        "sonnet",
         "--print",
         "--output-format",
         "stream-json",
         "--verbose",
     ]
+
+
+@pytest.mark.parametrize(
+    ("legacy_model", "supported_alias"),
+    [
+        ("claude-opus-4-8", "opus"),
+        ("claude-sonnet-5", "sonnet"),
+        ("claude-fable-5", "sonnet"),
+    ],
+)
+def test_claude_adapter_repairs_legacy_model_in_explicit_command(
+    tmp_path: Path,
+    legacy_model: str,
+    supported_alias: str,
+):
+    from agent_relay.adapters import ClaudeAdapter
+
+    cfg = AgentConfig(
+        name="legacy-claude",
+        adapter="claude",
+        model=legacy_model,
+        role="advisor",
+        permissions="read_only",
+        command=["claude", "--model", legacy_model],
+        prompt_transport="stdin",
+    )
+
+    command = ClaudeAdapter(cfg).build_command("prompt", tmp_path)
+
+    assert command[:3] == ["claude", "--model", supported_alias]
+    assert legacy_model not in command
 
 
 def test_claude_adapter_normalizes_final_stream_result_for_parser(tmp_path: Path):
@@ -351,7 +384,7 @@ def test_claude_stream_pipeline_formats_tools_and_parses_result(tmp_path: Path):
 import json
 import sys
 
-assert sys.stdin.read() == "inspect repository"
+assert sys.stdin.read() == "inspect repository\\n"
 session = "session-1"
 result = {
     "summary": "pipeline complete",
@@ -771,6 +804,63 @@ def test_policy_preload_denies_absolute_child_command_before_execution(tmp_path:
     assert proc.returncode == 0
     assert "blocked-tool" in proc.stderr or "Permission denied" in proc.stderr
     assert not marker.exists()
+
+
+def test_policy_preload_blocks_workspace_mutations_for_read_only_roles(tmp_path: Path):
+    policy_bin = install_command_policy_wrappers(tmp_path / "policy")
+    preload = policy_bin / POLICY_PRELOAD_NAME
+    if not preload.is_file():
+        pytest.skip("policy preload library was not built on this platform")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    existing = workspace / "existing.txt"
+    existing.write_text("baseline\n", encoding="utf-8")
+    original_mode = existing.stat().st_mode & 0o7777
+    env = internal_subprocess_env()
+    env["LD_PRELOAD"] = str(preload)
+    env["STRINGBEAN_POLICY_PRELOAD"] = str(preload)
+    env["STRINGBEAN_POLICY_WORKSPACE_ROOT"] = str(workspace.resolve())
+    env["STRINGBEAN_POLICY_WRITE_MODE"] = POLICY_WRITE_MODE_READ_ONLY
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path\n"
+                "blocked = 0\n"
+                "actions = [\n"
+                "    lambda: Path('existing.txt').write_text('changed'),\n"
+                "    lambda: Path('new.txt').write_text('new'),\n"
+                "    lambda: Path('newdir').mkdir(),\n"
+                "    lambda: Path('existing.txt').rename('renamed.txt'),\n"
+                "    lambda: Path('existing.txt').unlink(),\n"
+                "    lambda: Path('existing.txt').chmod(0o600),\n"
+                "]\n"
+                "for action in actions:\n"
+                "    try:\n"
+                "        action()\n"
+                "    except OSError:\n"
+                "        blocked += 1\n"
+                "print(blocked)\n"
+            ),
+        ],
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "6"
+    assert proc.stderr.count(POLICY_WRITE_DENIAL_PREFIX) == 6
+    assert existing.read_text(encoding="utf-8") == "baseline\n"
+    assert existing.stat().st_mode & 0o7777 == original_mode
+    assert not (workspace / "new.txt").exists()
+    assert not (workspace / "newdir").exists()
+    assert not (workspace / "renamed.txt").exists()
 
 
 @pytest.mark.parametrize("launcher", ["execve", "execvpe", "posix_spawn"])

@@ -7,14 +7,45 @@ from typing import List
 from .base import CommandAdapterMixin, option_value
 
 
+LEGACY_CLAUDE_MODEL_ALIASES = {
+    # Early Stringbean presets pinned provider-specific or invented names.
+    # Stable Claude Code aliases keep those existing configs portable.
+    "claude-opus-4-8": "opus",
+    "claude-sonnet-5": "sonnet",
+    "claude-fable-5": "sonnet",
+    "fable": "sonnet",
+}
+
+
+def normalize_claude_model(model: str | None) -> str | None:
+    if model is None:
+        return None
+    normalized = model.strip()
+    if not normalized:
+        return normalized
+    return LEGACY_CLAUDE_MODEL_ALIASES.get(normalized.lower(), normalized)
+
+
+def _normalize_model_option(command: List[str]) -> List[str]:
+    normalized = list(command)
+    for index, part in enumerate(normalized):
+        if part == "--model" and index + 1 < len(normalized):
+            normalized[index + 1] = normalize_claude_model(normalized[index + 1]) or normalized[index + 1]
+        elif part.startswith("--model="):
+            value = part.split("=", 1)[1]
+            normalized[index] = f"--model={normalize_claude_model(value) or value}"
+    return normalized
+
+
 class ClaudeAdapter(CommandAdapterMixin):
     name = "claude"
     default_executable = "claude"
 
     def build_command(self, prompt: str, repo_root: Path) -> List[str]:
-        command = super().build_command(prompt, repo_root)
-        if self.agent.model and self._model(command) is None:
-            command = command + ["--model", self.agent.model]
+        command = _normalize_model_option(super().build_command(prompt, repo_root))
+        configured_model = normalize_claude_model(self.agent.model)
+        if configured_model and self._model(command) is None:
+            command = command + ["--model", configured_model]
         if "-p" not in command and "--print" not in command:
             command = command + ["--print"]
 

@@ -9,7 +9,8 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
+import time
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple, Type
 
 from rich.console import Console
 from rich.prompt import Confirm
@@ -33,6 +34,8 @@ from .policy import (
     DENIED_COMMANDS,
     DENIED_GIT_SUBCOMMANDS,
     POLICY_PRELOAD_NAME,
+    POLICY_WRITE_DENIAL_PREFIX,
+    POLICY_WRITE_MODE_READ_ONLY,
     apply_codex_execution_profile,
     git_command,
     install_command_policy_wrappers,
@@ -72,9 +75,11 @@ ADAPTERS = {
 MODE_CHOICES = {"auto", "low", "medium", "high"}
 _STATUS_RENAME_SEPARATOR = "\0"
 _NON_GIT_STATUS_PREFIX = "NG:"
+_IGNORED_METADATA_STATUS_PREFIX = "IG:"
 _NON_GIT_MAX_HASH_BYTES = 8 * 1024 * 1024
 _NON_GIT_MAX_WALK_DEPTH = 3
 _NON_GIT_MAX_WALK_ENTRIES = 2000
+_IGNORED_ROLLBACK_CONTENT_BUDGET_BYTES = 16 * 1024 * 1024
 PathContentState = Tuple[str, bytes, Optional[int]]
 
 
@@ -568,6 +573,14 @@ class WorkflowEngine:
     def _should_track_repo_diff(self, agent: AgentConfig) -> bool:
         return self.execution_profile == "ro" or agent.permissions == "read_only"
 
+    def _read_only_write_guard_active(self, agent: AgentConfig) -> bool:
+        """Return whether the Linux preload guard can enforce this read-only role."""
+        return (
+            agent.permissions == "read_only"
+            and not self.ignore_sandbox_warnings
+            and (self.policy_bin_dir / POLICY_PRELOAD_NAME).is_file()
+        )
+
     def _repository_exclusions(self) -> RepositoryExclusions:
         root = self.repo_root.resolve()
         configured = tuple(self.config.repository.excluded_paths)
@@ -592,6 +605,25 @@ class WorkflowEngine:
     def _policy_violation_message(self, agent_name: str, changed_files: List[str]) -> str:
         prefix = "read-only profile policy violation" if self.execution_profile == "ro" else "read-only role policy violation"
         return f"{prefix} in {agent_name}: forbidden changes {', '.join(changed_files)}"
+
+    def _write_guard_denied_paths(self, stderr: str) -> List[str]:
+        denied: List[str] = []
+        root = self.repo_root.resolve()
+        for line in stderr.splitlines():
+            marker_index = line.find(POLICY_WRITE_DENIAL_PREFIX)
+            if marker_index < 0:
+                continue
+            raw_path = line[marker_index + len(POLICY_WRITE_DENIAL_PREFIX) :].strip()
+            if not raw_path:
+                continue
+            path = Path(raw_path)
+            try:
+                display = path.resolve(strict=False).relative_to(root).as_posix()
+            except (OSError, ValueError):
+                display = raw_path
+            if display not in denied:
+                denied.append(display)
+        return denied
 
     def _policy_retry_prompt(
         self,
@@ -738,7 +770,7 @@ class WorkflowEngine:
             idx += 1
         return None
 
-    def _repo_status_snapshot(self) -> Dict[str, str]:
+    def _repo_status_snapshot(self, *, ignored_metadata_only: bool = False) -> Dict[str, str]:
         """Return the current repository diff snapshot excluding protected paths."""
         try:
             proc = subprocess.run(
@@ -757,12 +789,12 @@ class WorkflowEngine:
                 for path, status in self._repo_status_entries(proc.stdout).items()
                 if not self._is_excluded_status_path(path)
             }
-            for path, status in self._git_ignored_status_snapshot().items():
+            for path, status in self._git_ignored_status_snapshot(metadata_only=ignored_metadata_only).items():
                 entries.setdefault(path, status)
             return entries
         return self._non_git_status_snapshot()
 
-    def _git_ignored_status_snapshot(self) -> Dict[str, str]:
+    def _git_ignored_status_snapshot(self, *, metadata_only: bool = False) -> Dict[str, str]:
         try:
             proc = subprocess.run(
                 [git_command(), "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", "."],
@@ -777,6 +809,7 @@ class WorkflowEngine:
         if proc.returncode != 0:
             return {}
         entries: Dict[str, str] = {}
+        processed = 0
         for raw in proc.stdout.split(b"\0"):
             if not raw:
                 continue
@@ -787,9 +820,23 @@ class WorkflowEngine:
             for idx in range(1, len(path_parts)):
                 parent = Path(*path_parts[:idx]).as_posix()
                 if parent not in entries:
-                    entries[parent] = self._non_git_status_for_path(parent)
-            entries[path] = self._non_git_status_for_path(path)
+                    entries[parent] = self._ignored_status_for_path(parent, metadata_only=metadata_only)
+            entries[path] = self._ignored_status_for_path(path, metadata_only=metadata_only)
+            processed += 1
+            if self.codex_progress and processed % 10000 == 0:
+                detail = "metadata" if metadata_only else "rollback content"
+                self._progress(
+                    f"Policy baseline: indexed {processed:,} ignored paths ({detail})."
+                )
         return entries
+
+    def _ignored_status_for_path(self, path: str, *, metadata_only: bool) -> str:
+        if not metadata_only:
+            return self._non_git_status_for_path(path)
+        kind, metadata, mode = self._path_content_state(path, read_file_contents=False)
+        digest = hashlib.sha256(metadata).hexdigest()
+        mode_text = "" if mode is None else f":{mode:o}"
+        return f"{_IGNORED_METADATA_STATUS_PREFIX}{kind}:{digest}{mode_text}"
 
     def _is_internal_run_path(self, path: Path) -> bool:
         try:
@@ -854,7 +901,7 @@ class WorkflowEngine:
         mode_text = "" if mode is None else f":{mode:o}"
         return f"{_NON_GIT_STATUS_PREFIX}{kind}:{digest}{mode_text}"
 
-    def _path_content_state(self, path: str) -> PathContentState:
+    def _path_content_state(self, path: str, *, read_file_contents: bool = True) -> PathContentState:
         full_path = self.repo_root / path
         if not os.path.lexists(full_path):
             return ("missing", b"", None)
@@ -880,6 +927,12 @@ class WorkflowEngine:
             return ("other", b"", mode)
         try:
             stat_result = full_path.stat()
+            if not read_file_contents:
+                metadata = (
+                    f"{stat_result.st_size}:{stat_result.st_mtime_ns}:"
+                    f"{stat_result.st_ctime_ns}"
+                ).encode("ascii")
+                return ("file-metadata", metadata, mode)
             if stat_result.st_size > _NON_GIT_MAX_HASH_BYTES:
                 metadata = f"{stat_result.st_size}:{stat_result.st_mtime_ns}".encode("ascii")
                 return ("file-large", metadata, mode)
@@ -923,8 +976,15 @@ class WorkflowEngine:
             return False
         return proc.returncode == 0 and proc.stdout.strip() == "true"
 
-    def _repo_baseline_content_snapshot(self, status_entries: Dict[str, str]) -> Dict[str, PathContentState]:
+    def _repo_baseline_content_snapshot(
+        self,
+        status_entries: Dict[str, str],
+        *,
+        minimal: bool = False,
+        ignored_content_budget_bytes: Optional[int] = None,
+    ) -> Dict[str, PathContentState]:
         snapshot: Dict[str, PathContentState] = {}
+        ignored_content_remaining = ignored_content_budget_bytes
         if not self._is_git_worktree():
             for status_path in status_entries:
                 old_path, new_path = self._split_status_path(status_path)
@@ -932,33 +992,64 @@ class WorkflowEngine:
                 if new_path:
                     snapshot[new_path] = self._path_content_state(new_path)
             return snapshot
-        for current_root, dir_names, _ in os.walk(self.repo_root, topdown=True, followlinks=False):
-            root_path = Path(current_root)
-            kept_dirs = []
-            for dir_name in dir_names:
-                dir_path = root_path / dir_name
-                rel_dir = dir_path.relative_to(self.repo_root).as_posix()
-                if (
-                    is_control_metadata_path(rel_dir)
-                    or self._is_internal_run_path(dir_path)
-                    or self._repository_exclusions().is_excluded(rel_dir)
-                ):
-                    continue
-                kept_dirs.append(dir_name)
-                snapshot[rel_dir] = self._path_content_state(rel_dir)
-            dir_names[:] = kept_dirs
+        if not minimal:
+            for current_root, dir_names, _ in os.walk(self.repo_root, topdown=True, followlinks=False):
+                root_path = Path(current_root)
+                kept_dirs = []
+                for dir_name in dir_names:
+                    dir_path = root_path / dir_name
+                    rel_dir = dir_path.relative_to(self.repo_root).as_posix()
+                    if (
+                        is_control_metadata_path(rel_dir)
+                        or self._is_internal_run_path(dir_path)
+                        or self._repository_exclusions().is_excluded(rel_dir)
+                    ):
+                        continue
+                    kept_dirs.append(dir_name)
+                    snapshot[rel_dir] = self._path_content_state(rel_dir)
+                dir_names[:] = kept_dirs
         for tracked_path in self._git_tracked_paths():
             snapshot[tracked_path] = self._path_content_state(tracked_path)
         for status_path in status_entries:
+            if minimal and status_entries[status_path].startswith(_IGNORED_METADATA_STATUS_PREFIX):
+                continue
             old_path, new_path = self._split_status_path(status_path)
             if self._is_excluded_status_path(status_path):
                 continue
-            snapshot[old_path] = self._path_content_state(old_path)
+            if status_entries[status_path].startswith(_IGNORED_METADATA_STATUS_PREFIX):
+                metadata_state = self._path_content_state(old_path, read_file_contents=False)
+                full_path = self.repo_root / old_path
+                capture_content = ignored_content_remaining is None
+                if ignored_content_remaining is not None and metadata_state[0] == "file-metadata":
+                    try:
+                        file_size = full_path.stat().st_size
+                    except OSError:
+                        file_size = ignored_content_remaining + 1
+                    capture_content = file_size <= ignored_content_remaining
+                if capture_content:
+                    snapshot[old_path] = self._path_content_state(old_path)
+                    if ignored_content_remaining is not None and snapshot[old_path][0] == "file":
+                        ignored_content_remaining -= len(snapshot[old_path][1])
+                else:
+                    snapshot[old_path] = metadata_state
+            else:
+                snapshot[old_path] = self._path_content_state(old_path)
             if new_path:
                 snapshot[new_path] = self._path_content_state(new_path)
         return snapshot
 
-    def _repo_content_snapshot_for_paths(self, paths: Iterable[str]) -> Dict[str, PathContentState]:
+    def _repo_content_snapshot_for_paths(
+        self,
+        paths: Iterable[str] | Mapping[str, PathContentState],
+    ) -> Dict[str, PathContentState]:
+        if isinstance(paths, Mapping):
+            return {
+                path: self._path_content_state(
+                    path,
+                    read_file_contents=before_state[0] != "file-metadata",
+                )
+                for path, before_state in paths.items()
+            }
         return {path: self._path_content_state(path) for path in paths}
 
     @staticmethod
@@ -973,7 +1064,10 @@ class WorkflowEngine:
 
     @staticmethod
     def _is_non_git_status(status: Optional[str]) -> bool:
-        return bool(status and status.startswith(_NON_GIT_STATUS_PREFIX))
+        return bool(
+            status
+            and status.startswith((_NON_GIT_STATUS_PREFIX, _IGNORED_METADATA_STATUS_PREFIX))
+        )
 
     def _is_created_path_status(self, before_status: Optional[str], after_status: Optional[str]) -> bool:
         if after_status is None:
@@ -1032,7 +1126,12 @@ class WorkflowEngine:
             return apply_codex_execution_profile(command, self.execution_profile)
         return command
 
-    def _apply_subagent_policy_env(self, env_overrides: Dict[str, str]) -> Dict[str, str]:
+    def _apply_subagent_policy_env(
+        self,
+        env_overrides: Dict[str, str],
+        *,
+        enforce_read_only_writes: bool = False,
+    ) -> Dict[str, str]:
         out = dict(env_overrides)
         existing_path = out.get("PATH") or os.environ.get("PATH", "")
         existing_path = path_without_policy_bins(existing_path)
@@ -1043,6 +1142,11 @@ class WorkflowEngine:
         preload_path = self.policy_bin_dir / POLICY_PRELOAD_NAME
         out["STRINGBEAN_POLICY_BIN"] = str(self.policy_bin_dir)
         out["STRINGBEAN_POLICY_ALLOWED_PATHS"] = str(self.policy_bin_dir.resolve())
+        out["STRINGBEAN_POLICY_WORKSPACE_ROOT"] = str(self.repo_root.resolve())
+        if enforce_read_only_writes:
+            out["STRINGBEAN_POLICY_WRITE_MODE"] = POLICY_WRITE_MODE_READ_ONLY
+        else:
+            out["STRINGBEAN_POLICY_WRITE_MODE"] = ""
         out["STRINGBEAN_POLICY_WRAPPERS_ACTIVE"] = "1"
         out["STRINGBEAN_POLICY_PRELOAD_ACTIVE"] = "1" if preload_path.is_file() else "0"
         protected_paths = self._repository_exclusions().encoded_protected_paths()
@@ -1127,20 +1231,20 @@ class WorkflowEngine:
                 return 3
             return 4
         if requested_mode == "medium":
-            if "gpt-5.5" in model or "fable" in model:
+            if "gpt-5.5" in model or "sonnet" in model:
                 return 0
             if "gpt-5.6" in model or "grok" in model:
                 return 2
-            if "sonnet" in model:
+            if "haiku" in model:
                 return 3
             if "opus" in model:
                 return 5
             return 4
         if "gpt-5.5" in model:
             return 0
-        if "sonnet" in model:
+        if "haiku" in model:
             return 1
-        if "fable" in model or "grok" in model:
+        if "sonnet" in model or "grok" in model:
             return 2
         if "gpt-5.6" in model:
             return 4
@@ -1281,11 +1385,41 @@ class WorkflowEngine:
 
         if track_repo_diff is None:
             track_repo_diff = self._should_track_repo_diff(agent)
+        read_only_write_guard = self._read_only_write_guard_active(agent)
         baseline = None
         baseline_contents: Dict[str, PathContentState] = {}
         if track_repo_diff:
-            baseline = self._repo_status_snapshot()
-            baseline_contents = self._repo_baseline_content_snapshot(baseline)
+            baseline_started = time.monotonic()
+            if self.codex_progress:
+                baseline_mode = (
+                    "write guard plus metadata-only ignored paths"
+                    if read_only_write_guard
+                    else "compatibility snapshot"
+                )
+                self._progress(f"Policy baseline: starting — {baseline_mode}.")
+            baseline = self._repo_status_snapshot(ignored_metadata_only=True)
+            baseline_contents = self._repo_baseline_content_snapshot(
+                baseline,
+                minimal=read_only_write_guard,
+                ignored_content_budget_bytes=(
+                    0 if read_only_write_guard else _IGNORED_ROLLBACK_CONTENT_BUDGET_BYTES
+                ),
+            )
+            if self.codex_progress:
+                ignored_count = sum(
+                    status.startswith(_IGNORED_METADATA_STATUS_PREFIX)
+                    for status in baseline.values()
+                )
+                duration = self._format_elapsed(time.monotonic() - baseline_started)
+                detail = (
+                    f"{ignored_count:,} ignored paths indexed without content reads"
+                    if read_only_write_guard
+                    else (
+                        f"{ignored_count:,} ignored paths indexed; rollback content capped at "
+                        f"{_IGNORED_ROLLBACK_CONTENT_BUDGET_BYTES // (1024 * 1024)} MiB"
+                    )
+                )
+                self._progress(f"Policy baseline: ready in {duration} — {detail}.")
 
         agent_prompt = prompt
         exclusions = self._repository_exclusions()
@@ -1313,7 +1447,10 @@ class WorkflowEngine:
         env_overrides = dict(agent.environment_overrides)
         if extra_env:
             env_overrides.update(extra_env)
-        env_overrides = self._apply_subagent_policy_env(env_overrides)
+        env_overrides = self._apply_subagent_policy_env(
+            env_overrides,
+            enforce_read_only_writes=read_only_write_guard,
+        )
         env = merged_environment(env_overrides)
         if self.config.output.redact_environment_values:
             redaction_values = environment_redaction_values(env)
@@ -1333,6 +1470,11 @@ class WorkflowEngine:
             "policy_wrappers_active": self.policy_bin_dir.is_dir(),
             "policy_preload_path": str(self.policy_bin_dir / POLICY_PRELOAD_NAME),
             "policy_preload_active": (self.policy_bin_dir / POLICY_PRELOAD_NAME).is_file(),
+            "read_only_write_guard_active": read_only_write_guard,
+            "ignored_paths_metadata_only": True,
+            "ignored_rollback_content_budget_bytes": (
+                0 if read_only_write_guard else _IGNORED_ROLLBACK_CONTENT_BUDGET_BYTES
+            ),
             "excluded_path_patterns": list(exclusions.prompt_patterns()),
             "excluded_nested_repositories": list(exclusions.nested_repository_roots),
             "excluded_path_enforcement_active": bool(
@@ -1476,6 +1618,7 @@ class WorkflowEngine:
         parse_error: Optional[str] = None
         model_payload = None
         raw_payload = None
+        guard_denied_paths = self._write_guard_denied_paths(result.raw_stderr)
 
         if result.exit_code not in {0, None}:
             parse_error = f"agent exited with status {result.exit_code}"
@@ -1483,6 +1626,8 @@ class WorkflowEngine:
             parse_stdout = adapter.normalize_stdout(result.raw_stdout)
             parsed, raw_payload, parse_error = parse_structured_output(parse_stdout, expected)
             model_payload = parsed.model_dump(mode="json") if parsed is not None else None
+        if guard_denied_paths and not self.ignore_sandbox_warnings:
+            parse_error = self._policy_violation_message(agent_name, guard_denied_paths)
         stored_stdout = redact_environment_text(result.raw_stdout, redaction_values) if redaction_values else result.raw_stdout
         stored_stderr = redact_environment_text(result.raw_stderr, redaction_values) if redaction_values else result.raw_stderr
         stored_payload = (
@@ -1516,10 +1661,10 @@ class WorkflowEngine:
             call_result.metadata["watchdog_events"] = result.watchdog_events
 
         changed_paths: List[str] | None = None
-        denied_paths: List[str] = []
+        denied_paths: List[str] = list(guard_denied_paths)
         denied_path_keys: List[str] = []
         if track_repo_diff and baseline is not None:
-            after = self._repo_status_snapshot()
+            after = self._repo_status_snapshot(ignored_metadata_only=True)
             after_contents = self._repo_content_snapshot_for_paths(baseline_contents)
             changed_path_keys, allowed_path_keys, denied_path_keys = self._classify_repo_delta(
                 baseline,
@@ -1530,7 +1675,8 @@ class WorkflowEngine:
             )
             changed_paths = self._display_status_paths(changed_path_keys)
             allowed_paths = self._display_status_paths(allowed_path_keys)
-            denied_paths = self._display_status_paths(denied_path_keys)
+            delta_denied_paths = self._display_status_paths(denied_path_keys)
+            denied_paths.extend(path for path in delta_denied_paths if path not in denied_paths)
             call_result.diff_delta_files = changed_paths
             call_result.metadata["allowed_create_paths"] = allowed_paths
             call_result.metadata["denied_change_paths"] = denied_paths
@@ -1546,6 +1692,12 @@ class WorkflowEngine:
                     self._rollback_read_only_changes(changed_path_keys, baseline, after, baseline_contents)
                     parse_error = self._policy_violation_message(agent_name, denied_paths)
                     call_result.parse_error = parse_error
+        if guard_denied_paths:
+            call_result.metadata["write_guard_denied_paths"] = guard_denied_paths
+            call_result.metadata["denied_change_paths"] = denied_paths
+            if not self.ignore_sandbox_warnings:
+                parse_error = self._policy_violation_message(agent_name, denied_paths)
+                call_result.parse_error = parse_error
         excluded_policy_violation = any(self._is_excluded_status_path(path) for path in denied_path_keys)
         if excluded_policy_violation:
             call_result.metadata["excluded_path_policy_violation"] = True
@@ -1680,7 +1832,7 @@ class WorkflowEngine:
             self._ensure_parent_directory(full_path)
             os.symlink(content.decode("utf-8", errors="surrogateescape"), full_path)
             return
-        if kind == "file-large":
+        if kind in {"file-large", "file-metadata"}:
             return
         if kind == "excluded":
             return

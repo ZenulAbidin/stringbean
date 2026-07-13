@@ -856,7 +856,7 @@ def test_agent_stream_formats_claude_events_and_hides_thinking(tmp_path: Path, c
                 "type": "system",
                 "subtype": "init",
                 "session_id": "session-1",
-                "model": "claude-sonnet-5",
+                "model": "sonnet",
                 "tools": ["Bash", "Read"],
             }
         )
@@ -1363,7 +1363,7 @@ print(json.dumps({
     assert (tmp_path / "notes" / "implemented.txt").read_text(encoding="utf-8") == "changed\n"
 
 
-def test_read_only_agent_rejects_and_rolls_back_ignored_file_changes(tmp_path: Path):
+def test_read_only_agent_blocks_ignored_file_changes_before_they_happen(tmp_path: Path):
     _init_git_repo(tmp_path)
     (tmp_path / ".gitignore").write_text("ignored/\ncache/\n", encoding="utf-8")
     ignored_dir = tmp_path / "ignored"
@@ -1411,19 +1411,173 @@ print(json.dumps({
     state = RunState.load(run_dir.state_path)
     engine = WorkflowEngine(cfg, run_dir, state, execution_profile="rw")
 
-    _, parse_error = asyncio.run(
+    result, parse_error = asyncio.run(
         engine._run_agent("reader", "advisor", RunStatus.ADVISOR_REVIEW, "prompt", ImplementerResponse)
     )
 
     assert parse_error is not None
     assert "read-only role policy violation" in parse_error
     assert "ignored/existing.cache" in parse_error
-    assert "cache/new.cache" in parse_error
+    assert result.metadata["read_only_write_guard_active"] is True
+    assert result.metadata["ignored_paths_metadata_only"] is True
+    assert result.metadata["write_guard_denied_paths"] == ["ignored/existing.cache"]
     assert existing.read_text(encoding="utf-8") == "baseline\n"
     assert not (tmp_path / "cache").exists()
 
 
-def test_read_only_rollback_removes_empty_parents_for_new_untracked_nested_paths(tmp_path: Path):
+def test_guarded_read_only_baseline_never_reads_ignored_build_contents(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    _init_git_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    for index in range(250):
+        (build / f"artifact-{index}.bin").write_bytes(b"x" * 4096)
+
+    script = tmp_path / "reader.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+
+print(json.dumps({
+    "status": "completed",
+    "summary": "inspected without writes",
+    "files_changed": [],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [],
+    "handoff_notes": []
+}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    _commit_all(tmp_path)
+
+    original_read_bytes = Path.read_bytes
+
+    def reject_ignored_content_reads(path: Path) -> bytes:
+        if path.is_relative_to(build):
+            raise AssertionError(f"ignored content was read: {path}")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_ignored_content_reads)
+    cfg = Config(
+        agents={
+            "reader": AgentConfig(
+                name="reader",
+                adapter="generic",
+                role="advisor",
+                permissions="read_only",
+                command=[str(script)],
+            )
+        },
+        workflow=WorkflowConfig(orchestrator="reader", implementers=["reader"], reviewers=["reader"]),
+        output=OutputConfig(stream_agent_output=False),
+    )
+    run_dir = create_new_run(tmp_path, "run-fast-ignored-baseline", "Fast baseline", 10, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, execution_profile="rw", codex_progress=True)
+
+    result, parse_error = asyncio.run(
+        engine._run_agent("reader", "advisor", RunStatus.ADVISOR_REVIEW, "prompt", ImplementerResponse)
+    )
+
+    assert parse_error is None
+    assert result.metadata["read_only_write_guard_active"] is True
+    assert result.metadata["ignored_paths_metadata_only"] is True
+    visible = capsys.readouterr().out
+    assert "Policy baseline: starting" in visible
+    assert "ignored paths indexed without content reads" in visible
+
+
+def test_ignored_rollback_fallback_has_an_aggregate_content_budget(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "one.bin").write_bytes(b"1" * 6)
+    (build / "two.bin").write_bytes(b"2" * 6)
+    _commit_all(tmp_path)
+    engine = _status_engine_for_repo(tmp_path, tmp_path / "runs")
+
+    baseline = engine._repo_status_snapshot(ignored_metadata_only=True)
+    contents = engine._repo_baseline_content_snapshot(
+        baseline,
+        ignored_content_budget_bytes=8,
+    )
+
+    assert baseline["build/one.bin"].startswith("IG:")
+    assert baseline["build/two.bin"].startswith("IG:")
+    ignored_states = [contents["build/one.bin"], contents["build/two.bin"]]
+    assert {state[0] for state in ignored_states} == {"file", "file-metadata"}
+    assert sum(len(state[1]) for state in ignored_states if state[0] == "file") <= 8
+
+
+def test_ignored_rollback_fallback_restores_small_files_without_preload_guard(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _init_git_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    ignored = tmp_path / "ignored"
+    ignored.mkdir()
+    existing = ignored / "existing.cache"
+    existing.write_text("baseline\n", encoding="utf-8")
+    _commit_all(tmp_path)
+    script = tmp_path / "reader.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+Path("ignored/existing.cache").write_text("modified\\n", encoding="utf-8")
+print(json.dumps({
+    "status": "completed",
+    "summary": "modified ignored file",
+    "files_changed": ["ignored/existing.cache"],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [],
+    "handoff_notes": []
+}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    cfg = Config(
+        agents={
+            "reader": AgentConfig(
+                name="reader",
+                adapter="generic",
+                role="advisor",
+                permissions="read_only",
+                command=[str(script)],
+            )
+        },
+        workflow=WorkflowConfig(orchestrator="reader", implementers=["reader"], reviewers=["reader"]),
+        output=OutputConfig(stream_agent_output=False),
+    )
+    run_dir = create_new_run(tmp_path, "run-ignored-fallback", "Fallback policy", 10, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state, execution_profile="rw")
+    monkeypatch.setattr(engine, "_read_only_write_guard_active", lambda _agent: False)
+
+    result, parse_error = asyncio.run(
+        engine._run_agent("reader", "advisor", RunStatus.ADVISOR_REVIEW, "prompt", ImplementerResponse)
+    )
+
+    assert parse_error is not None
+    assert "ignored/existing.cache" in parse_error
+    assert result.metadata["read_only_write_guard_active"] is False
+    assert result.metadata["ignored_paths_metadata_only"] is True
+    assert existing.read_text(encoding="utf-8") == "baseline\n"
+
+
+def test_read_only_guard_does_not_leave_new_untracked_parent_directories(tmp_path: Path):
     _init_git_repo(tmp_path)
     (tmp_path / "tracked.txt").write_text("baseline\n", encoding="utf-8")
     _commit_all(tmp_path)
@@ -1436,9 +1590,14 @@ def test_read_only_rollback_removes_empty_parents_for_new_untracked_nested_paths
 import json
 from pathlib import Path
 
-Path("scratch/nested").mkdir(parents=True)
-Path("scratch/nested/new.txt").write_text("new\\n", encoding="utf-8")
-Path("existing/empty/new.txt").write_text("new\\n", encoding="utf-8")
+for action in (
+    lambda: Path("scratch/nested").mkdir(parents=True),
+    lambda: Path("existing/empty/new.txt").write_text("new\\n", encoding="utf-8"),
+):
+    try:
+        action()
+    except OSError:
+        pass
 print(json.dumps({
     "status": "completed",
     "summary": "created nested untracked files",
@@ -1475,7 +1634,7 @@ print(json.dumps({
 
     assert parse_error is not None
     assert "read-only role policy violation" in parse_error
-    assert "scratch/nested/new.txt" in parse_error
+    assert "scratch/nested" in parse_error
     assert "existing/empty/new.txt" in parse_error
     assert not (tmp_path / "scratch").exists()
     assert preexisting_parent.is_dir()

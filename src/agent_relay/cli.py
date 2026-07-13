@@ -116,6 +116,13 @@ def _grok_command(reasoning_effort: str) -> list[str]:
     ]
 
 
+def _claude_command(model: str, effort: str | None = None) -> list[str]:
+    command = ["claude", "--model", model]
+    if effort:
+        command.extend(["--effort", effort])
+    return command
+
+
 def _capabilities_path(root: Path) -> Path:
     return _agent_relay_root(root) / CLI_CAPABILITIES_FILE
 
@@ -153,13 +160,14 @@ def _default_config() -> Config:
                 command=None,
                 prompt_transport="stdin",
             ),
-            "fable": AgentConfig(
-                name="fable",
+            "sonnet": AgentConfig(
+                name="sonnet",
                 adapter="claude",
-                model="claude-fable-5",
+                model="sonnet",
                 role="advisor",
                 permissions="read_only",
-                command=None,
+                command=_claude_command("sonnet", "medium"),
+                mode="medium",
                 prompt_transport="stdin",
             ),
             "grok": AgentConfig(
@@ -183,7 +191,7 @@ def _default_config() -> Config:
         },
         workflow=WorkflowConfig(
             orchestrator="sol",
-            advisors=["fable"],
+            advisors=["sonnet"],
             implementers=["grok"],
             reviewers=["sol-review"],
             advisor_policy="before_implementation",
@@ -204,14 +212,15 @@ def _preset_config(preset: str) -> Config:
                 "sol": AgentConfig(
                     name="sol",
                     adapter="claude",
-                    model="claude-fable-5",
+                    model="sonnet",
                     role="orchestrator",
                     permissions="read_write",
-                    command=None,
+                    command=_claude_command("sonnet", "high"),
+                    mode="high",
                     prompt_transport="stdin",
                 ),
-                "fable": AgentConfig(
-                    name="fable",
+                "codex-advisor": AgentConfig(
+                    name="codex-advisor",
                     adapter="codex",
                     model="gpt-5.6-sol",
                     role="advisor",
@@ -240,7 +249,7 @@ def _preset_config(preset: str) -> Config:
             },
             workflow=WorkflowConfig(
                 orchestrator="sol",
-                advisors=["fable"],
+                advisors=["codex-advisor"],
                 implementers=["grok"],
                 reviewers=["reviewer"],
                 advisor_policy="before_implementation",
@@ -395,33 +404,33 @@ def _preset_config(preset: str) -> Config:
                     mode="low",
                     prompt_transport="stdin",
                 ),
-                "claude-opus-4-8": AgentConfig(
-                    name="claude-opus-4-8",
+                "claude-opus": AgentConfig(
+                    name="claude-opus",
                     adapter="claude",
-                    model="claude-opus-4-8",
+                    model="opus",
                     role="reviewer",
                     permissions="read_only",
-                    command=["claude", "--model", "claude-opus-4-8"],
+                    command=_claude_command("opus", "high"),
                     mode="high",
                     prompt_transport="stdin",
                 ),
-                "claude-fable-5": AgentConfig(
-                    name="claude-fable-5",
+                "claude-sonnet": AgentConfig(
+                    name="claude-sonnet",
                     adapter="claude",
-                    model="claude-fable-5",
+                    model="sonnet",
                     role="advisor",
                     permissions="read_only",
-                    command=["claude", "--model", "claude-fable-5"],
+                    command=_claude_command("sonnet", "medium"),
                     mode="medium",
                     prompt_transport="stdin",
                 ),
-                "claude-sonnet-5": AgentConfig(
-                    name="claude-sonnet-5",
+                "claude-haiku": AgentConfig(
+                    name="claude-haiku",
                     adapter="claude",
-                    model="claude-sonnet-5",
+                    model="haiku",
                     role="reviewer",
                     permissions="read_only",
-                    command=["claude", "--model", "claude-sonnet-5"],
+                    command=_claude_command("haiku"),
                     mode="low",
                     prompt_transport="stdin",
                 ),
@@ -448,9 +457,9 @@ def _preset_config(preset: str) -> Config:
             },
             workflow=WorkflowConfig(
                 orchestrator="gpt55-high",
-                advisors=["gpt55-low", "gpt55-medium", "claude-fable-5", "gpt56-medium", "claude-opus-4-8"],
+                advisors=["gpt55-low", "gpt55-medium", "claude-sonnet", "gpt56-medium", "claude-opus"],
                 implementers=["gpt55-low-rw", "gpt55-medium-rw", "gpt55-high", "grok-build"],
-                reviewers=["gpt55-low", "claude-opus-4-8", "claude-sonnet-5", "grok-review", "gpt56-low"],
+                reviewers=["gpt55-low", "claude-opus", "claude-haiku", "grok-review", "gpt56-low"],
                 advisor_policy="before_implementation",
                 max_review_rounds=2,
                 max_total_agent_calls=24,

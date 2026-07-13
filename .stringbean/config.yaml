@@ -1,54 +1,58 @@
 agents:
-  claude-fable-5:
+  claude-haiku:
     adapter: claude
     command:
     - claude
     - --model
-    - claude-fable-5
-    environment_overrides: {}
-    fallback_agent: null
-    mode: medium
-    model: claude-fable-5
-    name: claude-fable-5
-    permissions: read_only
-    prompt_transport: stdin
-    role: advisor
-    timeout_seconds: 0
-    idle_timeout_seconds: 7200
-    max_repeated_output_lines: 200
-    working_directory: .
-  claude-opus-4-8:
-    adapter: claude
-    command:
-    - claude
-    - --model
-    - claude-opus-4-8
-    environment_overrides: {}
-    fallback_agent: null
-    mode: high
-    model: claude-opus-4-8
-    name: claude-opus-4-8
-    permissions: read_only
-    prompt_transport: stdin
-    role: reviewer
-    timeout_seconds: 0
-    idle_timeout_seconds: 7200
-    max_repeated_output_lines: 200
-    working_directory: .
-  claude-sonnet-5:
-    adapter: claude
-    command:
-    - claude
-    - --model
-    - claude-sonnet-5
+    - haiku
     environment_overrides: {}
     fallback_agent: null
     mode: low
-    model: claude-sonnet-5
-    name: claude-sonnet-5
+    model: haiku
+    name: claude-haiku
     permissions: read_only
     prompt_transport: stdin
     role: reviewer
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
+  claude-opus:
+    adapter: claude
+    command:
+    - claude
+    - --model
+    - opus
+    - --effort
+    - high
+    environment_overrides: {}
+    fallback_agent: null
+    mode: high
+    model: opus
+    name: claude-opus
+    permissions: read_only
+    prompt_transport: stdin
+    role: reviewer
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
+  claude-sonnet:
+    adapter: claude
+    command:
+    - claude
+    - --model
+    - sonnet
+    - --effort
+    - medium
+    environment_overrides: {}
+    fallback_agent: null
+    mode: medium
+    model: sonnet
+    name: claude-sonnet
+    permissions: read_only
+    prompt_transport: stdin
+    role: advisor
     timeout_seconds: 0
     idle_timeout_seconds: 7200
     max_repeated_output_lines: 200
@@ -277,9 +281,9 @@ workflow:
   advisors:
   - gpt55-low
   - gpt55-medium
-  - claude-fable-5
+  - claude-sonnet
   - gpt56-medium
-  - claude-opus-4-8
+  - claude-opus
   implementers:
   - gpt55-low-rw
   - gpt55-medium-rw
@@ -293,8 +297,8 @@ workflow:
   researcher: []
   reviewers:
   - gpt55-low
-  - claude-opus-4-8
-  - claude-sonnet-5
+  - claude-opus
+  - claude-haiku
   - grok-review
   - gpt56-low
   testers: []

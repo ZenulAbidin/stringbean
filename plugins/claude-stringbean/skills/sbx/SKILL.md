@@ -2,7 +2,7 @@
 name: sbx
 description: Run Stringbean's sbx orchestrator from inside Claude Code; delegate local repository tasks to Stringbean; or run /sbx with compact live multi-agent orchestration output.
 argument-hint: <task> [--ro|--rw] [--mode auto|low|medium|high] [stringbean flags]
-allowed-tools: [Bash, Read, Glob, Grep, TaskOutput]
+allowed-tools: [Bash, Read, Glob, Grep, Monitor, TaskOutput, TaskStop]
 ---
 
 # Stringbean sbx
@@ -31,24 +31,30 @@ If the current working directory is not the Stringbean source checkout, run the 
 sbx "<task text>" <flags> --plugin-compact-output
 ```
 
-4. Show useful live Stringbean output while the command runs. Lines beginning with
-   `STRINGBEAN_INTERMEDIATE:` are live progress only, not final output.
-   Run in the foreground when Bash can preserve a live process beyond one tool wait. If the host's
-   timeout would terminate the process, start it as a background task and immediately use blocking
-   `TaskOutput` calls instead. A timeout is a polling boundary, never permission to kill Stringbean.
-   Repeat bounded waits for as many hours as needed while fresh five-second heartbeat or agent-output
-   lines continue to arrive. Stop only after a confirmed process failure or an explicit user-approved
-   interruption. Do not use `Monitor` or tell the user to wait.
+4. Run the selected command with `Monitor`, not a foreground `Bash` call. Pass the complete wrapper
+   command to `Monitor`, set `persistent: true`, and describe it as the active Stringbean run.
+   `Monitor` owns the subprocess and feeds each stdout/stderr line back while it runs, avoiding
+   Claude Code's foreground Bash timeout and batched tool-result behavior. A monitor timeout or host
+   timeout is a polling boundary, never permission to kill Stringbean.
+5. Make meaningful monitor events visible to the user as they arrive. Lines beginning with
+   `STRINGBEAN_INTERMEDIATE:` are live progress only, not final output. Relay new stage changes,
+   provider `assistant:`, `Tool Call:`, `Executed:`, and failure lines in concise normal assistant
+   updates; suppress duplicate five-second heartbeat lines. Do not leave all intermediate events
+   hidden inside the Monitor transcript and do not expose private chain-of-thought.
    Each provider subprocess launch is marked with `STRINGBEAN_INTERMEDIATE: Command:`.
-   Claude subprocess events are reconstructed live as concise `assistant:`, `Tool Call:`, and
-   `Executed:` lines; do not wait for the subprocess to exit before showing those lines.
-5. If Stringbean emits `STRINGBEAN_INTERMEDIATE: Watchdog: approval required`, leave the background
+6. If `Monitor` is unavailable in this Claude deployment, use `Bash` with
+   `run_in_background: true`. Read the returned task output file incrementally with `Read`; use short,
+   non-blocking `TaskOutput` polls only when no output file is provided. Never make one blocking
+   `TaskOutput` call that waits for the whole run. Continue bounded polling for as many hours as
+   needed while the task is active; stop only after failure or an explicit user-approved
+   interruption.
+7. If Stringbean emits `STRINGBEAN_INTERMEDIATE: Watchdog: approval required`, leave the monitored
    task alive and ask the user whether to stop it. The watchdog line is not authorization to call a
    task-kill operation. Kill that exact task only after an unambiguous yes; otherwise resume
-   `TaskOutput` polling. If Claude cannot preserve the task while asking, default to continuing it.
-6. Do not end the turn before the command completes or fails, except to request this explicit
+   monitoring. If Claude cannot preserve the task while asking, default to continuing it.
+8. Do not end the turn before the command completes or fails, except to request this explicit
    watchdog decision while the background task remains alive.
-7. After completion, read the final result between:
+9. After completion, read the final result between:
 
 ```text
 STRINGBEAN_FINAL_START
@@ -62,7 +68,7 @@ STRINGBEAN_RESULT_START
 STRINGBEAN_RESULT_END
 ```
 
-8. The visible final answer should report the useful fields from that result block, especially
+10. The visible final answer should report the useful fields from that result block, especially
    `Status`, `Result`, `Error`, `Tasks`, `Review rounds`, and `Artifacts`.
 
 ## Output rules

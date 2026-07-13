@@ -132,7 +132,7 @@ stringbean run --dry-run "Implement auth checks"
   - `--mode auto|high|medium|low` (default `auto`)
   - `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, `--reviewer-mode`
   - `--profile ro|rw`, `--ro`, `--rw`
-    - `rw` is the default profile: write-capable agents may modify files in service of the task. Read-only roles are still diff-checked.
+    - `rw` is the default profile: write-capable agents may modify files in service of the task. On Linux, read-only roles are protected at file-open time by the Stringbean preload guard and then diff-checked as defense in depth.
     - `ro` is the create-only profile: subagents can inspect, run commands, and create new files/directories, but modifications, deletes, renames, moves, or type changes to pre-existing repository paths are treated as policy violations and rolled back where safe.
     - Codex agents are launched with explicit approval/sandbox flags instead of inherited defaults: `ro` uses workspace-write with Stringbean diff enforcement; `rw` uses danger-full-access at the provider layer while Stringbean still diff-checks read-only roles.
     - Subagents receive a Stringbean denylist for destructive commands such as `rm`, `sudo`, `dd`, `mkfs`, `shutdown`, and destructive git operations such as `git reset`, `git clean`, and `git push`.
@@ -241,7 +241,7 @@ If Grok displays plugin-qualified skill names, choose `grok-stringbean:sbx`.
 
 ### Claude Code plugin wrapper
 
-For use inside Claude Code, install the local Claude plugin. It provides a user-invoked `sbx` skill for `/sbx ...` that runs `sbx --plugin-compact-output`, surfaces concise live assistant/tool output without replaying raw prompts, and mirrors the final sentinel result into Claude's visible answer.
+For use inside Claude Code, install the local Claude plugin. It provides a user-invoked `sbx` skill for `/sbx ...` that runs `sbx --plugin-compact-output` through Claude's `Monitor` tool, surfaces meaningful lines as they arrive instead of batching them in one Bash result, and mirrors the final sentinel result into Claude's visible answer. Deployments without `Monitor` fall back to a background task with incremental output-file reads.
 
 Install or refresh it with:
 
@@ -315,12 +315,13 @@ agents:
     idle_timeout_seconds: 7200
     max_repeated_output_lines: 200
 
-  fable:
+  sonnet:
     adapter: claude
-    model: fable
+    model: sonnet
     role: advisor
     permissions: read_only
-    command: null
+    command: [claude, --model, sonnet, --effort, medium]
+    mode: medium
     prompt_transport: stdin
     timeout_seconds: 0
     idle_timeout_seconds: 7200
@@ -350,7 +351,7 @@ agents:
 workflow:
   orchestrator: sol
   advisors:
-    - fable
+    - sonnet
   implementers:
     - grok
   reviewers:
@@ -445,14 +446,14 @@ agents:
 
 ## Preset examples
 
-Preset A (Sol + Fable + Grok):
+Preset A (Sol + Claude Sonnet + Grok):
 
 - orchestrator: Codex / GPT-5.6 Sol
-- advisor: Claude / Fable 5
+- advisor: Claude / current Sonnet alias at medium effort
 - implementer: Grok / grok-build
 - reviewer: Codex / GPT-5.6 Sol
 
-Preset B (Fable architecture, external implementer):
+Preset B (Claude architecture, external implementer):
 
 - orchestrator: Claude
 - advisor: Codex
@@ -470,10 +471,12 @@ Preset D (fine-grained model mix):
 
 - GPT-5.6: high/medium/low reasoning as separate agents
 - GPT-5.5: high/medium/low reasoning as separate agents
-- Claude: Opus 4.8, Fable 5, Sonnet 5
+- Claude: current `opus`, `sonnet`, and `haiku` aliases (high, medium, and low modes respectively)
 - Grok: build/review profiles using headless argv prompt transport (`grok ... -p "<prompt>"`)
 
-`--mode auto` enumerates the configured candidate agents/models for each role, infers high/medium/low from the task text, then selects the lowest-cost adequate candidate for that role. Dry runs include `available_models` and `selection_rationale` so you can see what was considered and why an agent was selected. Simple read/list/show tasks route to low reasoning candidates; complex refactors, migrations, security, architecture, and distributed-system tasks route to stronger high reasoning candidates. Explicit agent choices such as `--orchestrator claude-sonnet-5` take precedence over mode selection; use `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, and `--reviewer-mode` when you want automatic selection constrained by reasoning level instead.
+`--mode auto` enumerates the configured candidate agents/models for each role, infers high/medium/low from the task text, then selects the lowest-cost adequate candidate for that role. Dry runs include `available_models` and `selection_rationale` so you can see what was considered and why an agent was selected. Simple read/list/show tasks route to low reasoning candidates; complex refactors, migrations, security, architecture, and distributed-system tasks route to stronger high reasoning candidates. Explicit agent choices such as `--advisor claude-sonnet` take precedence over mode selection; use `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, and `--reviewer-mode` when you want automatic selection constrained by reasoning level instead.
+
+Claude Code's stable aliases are intentional: `opus`, `sonnet`, and `haiku` resolve to models available for the user's provider and account. Stringbean transparently repairs legacy preset values (`claude-opus-4-8`, `claude-sonnet-5`, and `claude-fable-5`) at launch so older configs no longer fail model validation.
 
 Create it with:
 
@@ -494,7 +497,7 @@ Each run gets `.stringbean/runs/<run-id>/` with:
 - `final-summary.md`
 - `calls/` with call folders:
   - `001-orchestrator/`
-  - `002-advisor-fable/`
+  - `002-advisor-sonnet/`
   - `003-implementer/...`
   - each with `prompt.md`, `stdout.txt`, `stderr.txt`, `result.json`, `metadata.json`
 

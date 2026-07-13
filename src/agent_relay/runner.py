@@ -234,7 +234,12 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
     )
 
     if cfg.prompt is not None and proc.stdin is not None:
-        proc.stdin.write(cfg.prompt.encode("utf-8"))
+        prompt_bytes = cfg.prompt.encode("utf-8")
+        if prompt_bytes and not prompt_bytes.endswith(b"\n"):
+            # Text-mode provider CLIs, including Claude Code, may wait for or
+            # discard an unterminated final stdin record before EOF.
+            prompt_bytes += b"\n"
+        proc.stdin.write(prompt_bytes)
         proc.stdin.close()
 
     stdout_chunks: list[str] = []

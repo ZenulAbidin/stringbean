@@ -349,6 +349,20 @@ def test_plugin_skills_treat_host_timeouts_as_polling_boundaries():
         assert "3,600 seconds" not in text
 
 
+def test_claude_skill_uses_monitor_for_line_by_line_progress():
+    repo = Path(__file__).resolve().parents[1]
+    text = (
+        repo / "plugins" / "claude-stringbean" / "skills" / "sbx" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Monitor" in text.split("---", 2)[1]
+    assert "set `persistent: true`" in text
+    assert "feeds each stdout/stderr line" in text
+    assert "Do not leave all intermediate events" in text
+    assert "Never make one blocking" in text
+    assert "Do not use `Monitor`" not in text
+
+
 def test_claude_wrapper_separates_flags_from_single_argument(tmp_path: Path):
     repo = Path(__file__).resolve().parents[1]
     fake_sbx = tmp_path / "fake-sbx"
@@ -388,18 +402,21 @@ def test_preset_c_uses_real_grok_models_instead_of_cat(tmp_path: Path, monkeypat
     assert "local-fallback" not in config_path.read_text(encoding="utf-8")
 
 
-def test_preset_d_uses_full_claude_model_ids():
+def test_preset_d_uses_supported_claude_aliases_and_effort_levels():
     cfg = cli._preset_config("D")
 
     expected = {
-        "claude-opus-4-8": "claude-opus-4-8",
-        "claude-fable-5": "claude-fable-5",
-        "claude-sonnet-5": "claude-sonnet-5",
+        "claude-opus": ("opus", "high"),
+        "claude-sonnet": ("sonnet", "medium"),
+        "claude-haiku": ("haiku", None),
     }
-    for name, model in expected.items():
+    for name, (model, effort) in expected.items():
         agent = cfg.agents[name]
         assert agent.model == model
-        assert agent.command == ["claude", "--model", model]
+        expected_command = ["claude", "--model", model]
+        if effort:
+            expected_command.extend(["--effort", effort])
+        assert agent.command == expected_command
 
 
 def test_run_rejects_manually_configured_placeholder_before_launch(tmp_path: Path, monkeypatch):

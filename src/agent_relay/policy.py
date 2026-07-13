@@ -52,6 +52,8 @@ _REAL_GIT: str | None = None
 POLICY_BIN_SENTINEL = ".stringbean-policy-bin"
 POLICY_PRELOAD_NAME = "libstringbean_policy.so"
 POLICY_ENV_PREFIX = "STRINGBEAN_POLICY_"
+POLICY_WRITE_DENIAL_PREFIX = "stringbean policy: read-only workspace write denied:"
+POLICY_WRITE_MODE_READ_ONLY = "read-only"
 
 
 def _is_policy_bin_entry(path_entry: str) -> bool:
@@ -336,6 +338,7 @@ def _write_policy_preload_source(source_path: Path) -> None:
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -510,7 +513,10 @@ static int sb_should_block(const char *path, char *const argv[]) {
 static int sb_absolute_path(const char *path, int dirfd, char *output, size_t output_size) {
     char combined[PATH_MAX];
     char base[PATH_MAX];
+    char parent[PATH_MAX];
+    char resolved_parent[PATH_MAX];
     char proc_path[64];
+    char *slash;
     ssize_t base_len;
     int written;
     if (path == NULL || path[0] == '\0') {
@@ -542,8 +548,77 @@ static int sb_absolute_path(const char *path, int dirfd, char *output, size_t ou
     if (realpath(combined, output) != NULL) {
         return 1;
     }
+    written = snprintf(parent, sizeof(parent), "%s", combined);
+    if (written < 0 || (size_t)written >= sizeof(parent)) {
+        return 0;
+    }
+    slash = strrchr(parent, '/');
+    if (slash != NULL && slash != parent) {
+        const char *name = slash + 1;
+        *slash = '\0';
+        if (realpath(parent, resolved_parent) != NULL) {
+            written = snprintf(output, output_size, "%s/%s", resolved_parent, name);
+            return written >= 0 && (size_t)written < output_size;
+        }
+    }
     written = snprintf(output, output_size, "%s", combined);
     return written >= 0 && (size_t)written < output_size;
+}
+
+static int sb_path_is_within(const char *root, const char *path) {
+    size_t root_len;
+    if (root == NULL || root[0] == '\0' || path == NULL || path[0] == '\0') {
+        return 0;
+    }
+    root_len = strlen(root);
+    while (root_len > 1 && root[root_len - 1] == '/') {
+        root_len--;
+    }
+    return strncmp(root, path, root_len) == 0 &&
+        (path[root_len] == '\0' || path[root_len] == '/');
+}
+
+static int sb_write_policy_enabled(void) {
+    const char *mode = getenv("STRINGBEAN_POLICY_WRITE_MODE");
+    return mode != NULL && strcmp(mode, "read-only") == 0;
+}
+
+static int sb_should_block_write(const char *path, int dirfd) {
+    char absolute[PATH_MAX];
+    const char *workspace_root;
+    int blocked;
+    if (sb_access_guard || !sb_write_policy_enabled()) {
+        return 0;
+    }
+    workspace_root = getenv("STRINGBEAN_POLICY_WORKSPACE_ROOT");
+    if (workspace_root == NULL || workspace_root[0] == '\0') {
+        return 0;
+    }
+    sb_access_guard = 1;
+    blocked = sb_absolute_path(path, dirfd, absolute, sizeof(absolute)) &&
+        sb_path_is_within(workspace_root, absolute);
+    sb_access_guard = 0;
+    if (blocked) {
+        fprintf(stderr, "stringbean policy: read-only workspace write denied: %s\n", absolute);
+    }
+    return blocked;
+}
+
+static int sb_should_block_fd_write(int fd) {
+    char proc_path[64];
+    int written = snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+    if (written < 0 || (size_t)written >= sizeof(proc_path)) {
+        return 0;
+    }
+    return sb_should_block_write(proc_path, AT_FDCWD);
+}
+
+static int sb_flags_request_write(int flags) {
+    return (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) != 0;
+}
+
+static int sb_fopen_requests_write(const char *mode) {
+    return mode != NULL && strpbrk(mode, "wax+") != NULL;
 }
 
 static int sb_path_list_contains(const char *list, const char *path) {
@@ -618,7 +693,8 @@ int open(const char *pathname, int flags, ...) {
         mode = va_arg(args, mode_t);
         va_end(args);
     }
-    if (sb_should_block_access(pathname, AT_FDCWD)) {
+    if (sb_should_block_access(pathname, AT_FDCWD) ||
+        (sb_flags_request_write(flags) && sb_should_block_write(pathname, AT_FDCWD))) {
         errno = EACCES;
         return -1;
     }
@@ -637,7 +713,8 @@ int open64(const char *pathname, int flags, ...) {
         mode = va_arg(args, mode_t);
         va_end(args);
     }
-    if (sb_should_block_access(pathname, AT_FDCWD)) {
+    if (sb_should_block_access(pathname, AT_FDCWD) ||
+        (sb_flags_request_write(flags) && sb_should_block_write(pathname, AT_FDCWD))) {
         errno = EACCES;
         return -1;
     }
@@ -656,7 +733,8 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
         mode = va_arg(args, mode_t);
         va_end(args);
     }
-    if (sb_should_block_access(pathname, dirfd)) {
+    if (sb_should_block_access(pathname, dirfd) ||
+        (sb_flags_request_write(flags) && sb_should_block_write(pathname, dirfd))) {
         errno = EACCES;
         return -1;
     }
@@ -675,7 +753,8 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
         mode = va_arg(args, mode_t);
         va_end(args);
     }
-    if (sb_should_block_access(pathname, dirfd)) {
+    if (sb_should_block_access(pathname, dirfd) ||
+        (sb_flags_request_write(flags) && sb_should_block_write(pathname, dirfd))) {
         errno = EACCES;
         return -1;
     }
@@ -687,7 +766,8 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
 
 FILE *fopen(const char *pathname, const char *mode) {
     static FILE *(*real_fopen)(const char *, const char *) = NULL;
-    if (sb_should_block_access(pathname, AT_FDCWD)) {
+    if (sb_should_block_access(pathname, AT_FDCWD) ||
+        (sb_fopen_requests_write(mode) && sb_should_block_write(pathname, AT_FDCWD))) {
         errno = EACCES;
         return NULL;
     }
@@ -699,7 +779,8 @@ FILE *fopen(const char *pathname, const char *mode) {
 
 FILE *fopen64(const char *pathname, const char *mode) {
     static FILE *(*real_fopen64)(const char *, const char *) = NULL;
-    if (sb_should_block_access(pathname, AT_FDCWD)) {
+    if (sb_should_block_access(pathname, AT_FDCWD) ||
+        (sb_fopen_requests_write(mode) && sb_should_block_write(pathname, AT_FDCWD))) {
         errno = EACCES;
         return NULL;
     }
@@ -707,6 +788,262 @@ FILE *fopen64(const char *pathname, const char *mode) {
         real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
     }
     return real_fopen64(pathname, mode);
+}
+
+int creat(const char *pathname, mode_t mode) {
+    static int (*real_creat)(const char *, mode_t) = NULL;
+    if (sb_should_block_write(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_creat == NULL) {
+        real_creat = dlsym(RTLD_NEXT, "creat");
+    }
+    return real_creat(pathname, mode);
+}
+
+int creat64(const char *pathname, mode_t mode) {
+    static int (*real_creat64)(const char *, mode_t) = NULL;
+    if (sb_should_block_write(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_creat64 == NULL) {
+        real_creat64 = dlsym(RTLD_NEXT, "creat64");
+    }
+    return real_creat64(pathname, mode);
+}
+
+int mkdir(const char *pathname, mode_t mode) {
+    static int (*real_mkdir)(const char *, mode_t) = NULL;
+    if (sb_should_block_write(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_mkdir == NULL) {
+        real_mkdir = dlsym(RTLD_NEXT, "mkdir");
+    }
+    return real_mkdir(pathname, mode);
+}
+
+int mkdirat(int dirfd, const char *pathname, mode_t mode) {
+    static int (*real_mkdirat)(int, const char *, mode_t) = NULL;
+    if (sb_should_block_write(pathname, dirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_mkdirat == NULL) {
+        real_mkdirat = dlsym(RTLD_NEXT, "mkdirat");
+    }
+    return real_mkdirat(dirfd, pathname, mode);
+}
+
+int unlink(const char *pathname) {
+    static int (*real_unlink)(const char *) = NULL;
+    if (sb_should_block_write(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_unlink == NULL) {
+        real_unlink = dlsym(RTLD_NEXT, "unlink");
+    }
+    return real_unlink(pathname);
+}
+
+int unlinkat(int dirfd, const char *pathname, int flags) {
+    static int (*real_unlinkat)(int, const char *, int) = NULL;
+    if (sb_should_block_write(pathname, dirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_unlinkat == NULL) {
+        real_unlinkat = dlsym(RTLD_NEXT, "unlinkat");
+    }
+    return real_unlinkat(dirfd, pathname, flags);
+}
+
+int rmdir(const char *pathname) {
+    static int (*real_rmdir)(const char *) = NULL;
+    if (sb_should_block_write(pathname, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_rmdir == NULL) {
+        real_rmdir = dlsym(RTLD_NEXT, "rmdir");
+    }
+    return real_rmdir(pathname);
+}
+
+int rename(const char *oldpath, const char *newpath) {
+    static int (*real_rename)(const char *, const char *) = NULL;
+    if (sb_should_block_write(oldpath, AT_FDCWD) || sb_should_block_write(newpath, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_rename == NULL) {
+        real_rename = dlsym(RTLD_NEXT, "rename");
+    }
+    return real_rename(oldpath, newpath);
+}
+
+int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
+    static int (*real_renameat)(int, const char *, int, const char *) = NULL;
+    if (sb_should_block_write(oldpath, olddirfd) || sb_should_block_write(newpath, newdirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_renameat == NULL) {
+        real_renameat = dlsym(RTLD_NEXT, "renameat");
+    }
+    return real_renameat(olddirfd, oldpath, newdirfd, newpath);
+}
+
+int renameat2(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, unsigned int flags) {
+    static int (*real_renameat2)(int, const char *, int, const char *, unsigned int) = NULL;
+    if (sb_should_block_write(oldpath, olddirfd) || sb_should_block_write(newpath, newdirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_renameat2 == NULL) {
+        real_renameat2 = dlsym(RTLD_NEXT, "renameat2");
+    }
+    if (real_renameat2 == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    return real_renameat2(olddirfd, oldpath, newdirfd, newpath, flags);
+}
+
+int link(const char *oldpath, const char *newpath) {
+    static int (*real_link)(const char *, const char *) = NULL;
+    if (sb_should_block_write(newpath, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_link == NULL) {
+        real_link = dlsym(RTLD_NEXT, "link");
+    }
+    return real_link(oldpath, newpath);
+}
+
+int linkat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, int flags) {
+    static int (*real_linkat)(int, const char *, int, const char *, int) = NULL;
+    if (sb_should_block_write(newpath, newdirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_linkat == NULL) {
+        real_linkat = dlsym(RTLD_NEXT, "linkat");
+    }
+    return real_linkat(olddirfd, oldpath, newdirfd, newpath, flags);
+}
+
+int symlink(const char *target, const char *linkpath) {
+    static int (*real_symlink)(const char *, const char *) = NULL;
+    if (sb_should_block_write(linkpath, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_symlink == NULL) {
+        real_symlink = dlsym(RTLD_NEXT, "symlink");
+    }
+    return real_symlink(target, linkpath);
+}
+
+int symlinkat(const char *target, int newdirfd, const char *linkpath) {
+    static int (*real_symlinkat)(const char *, int, const char *) = NULL;
+    if (sb_should_block_write(linkpath, newdirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_symlinkat == NULL) {
+        real_symlinkat = dlsym(RTLD_NEXT, "symlinkat");
+    }
+    return real_symlinkat(target, newdirfd, linkpath);
+}
+
+int truncate(const char *path, off_t length) {
+    static int (*real_truncate)(const char *, off_t) = NULL;
+    if (sb_should_block_write(path, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_truncate == NULL) {
+        real_truncate = dlsym(RTLD_NEXT, "truncate");
+    }
+    return real_truncate(path, length);
+}
+
+int truncate64(const char *path, off64_t length) {
+    static int (*real_truncate64)(const char *, off64_t) = NULL;
+    if (sb_should_block_write(path, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_truncate64 == NULL) {
+        real_truncate64 = dlsym(RTLD_NEXT, "truncate64");
+    }
+    return real_truncate64(path, length);
+}
+
+int ftruncate(int fd, off_t length) {
+    static int (*real_ftruncate)(int, off_t) = NULL;
+    if (sb_should_block_fd_write(fd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_ftruncate == NULL) {
+        real_ftruncate = dlsym(RTLD_NEXT, "ftruncate");
+    }
+    return real_ftruncate(fd, length);
+}
+
+int ftruncate64(int fd, off64_t length) {
+    static int (*real_ftruncate64)(int, off64_t) = NULL;
+    if (sb_should_block_fd_write(fd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_ftruncate64 == NULL) {
+        real_ftruncate64 = dlsym(RTLD_NEXT, "ftruncate64");
+    }
+    return real_ftruncate64(fd, length);
+}
+
+int chmod(const char *path, mode_t mode) {
+    static int (*real_chmod)(const char *, mode_t) = NULL;
+    if (sb_should_block_write(path, AT_FDCWD)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_chmod == NULL) {
+        real_chmod = dlsym(RTLD_NEXT, "chmod");
+    }
+    return real_chmod(path, mode);
+}
+
+int fchmod(int fd, mode_t mode) {
+    static int (*real_fchmod)(int, mode_t) = NULL;
+    if (sb_should_block_fd_write(fd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_fchmod == NULL) {
+        real_fchmod = dlsym(RTLD_NEXT, "fchmod");
+    }
+    return real_fchmod(fd, mode);
+}
+
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
+    static int (*real_fchmodat)(int, const char *, mode_t, int) = NULL;
+    if (sb_should_block_write(path, dirfd)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (real_fchmodat == NULL) {
+        real_fchmodat = dlsym(RTLD_NEXT, "fchmodat");
+    }
+    return real_fchmodat(dirfd, path, mode, flags);
 }
 
 DIR *opendir(const char *name) {
@@ -729,6 +1066,8 @@ static const char *const sb_preserved_env_names[] = {
     "STRINGBEAN_POLICY_WRAPPERS_ACTIVE",
     "STRINGBEAN_POLICY_EXCLUDED_PATHS",
     "STRINGBEAN_POLICY_ALLOWED_PATHS",
+    "STRINGBEAN_POLICY_WORKSPACE_ROOT",
+    "STRINGBEAN_POLICY_WRITE_MODE",
     "STRINGBEAN_DENIED_COMMANDS",
     "STRINGBEAN_DENIED_GIT_SUBCOMMANDS",
     NULL
