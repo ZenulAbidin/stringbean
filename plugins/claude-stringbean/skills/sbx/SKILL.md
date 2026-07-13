@@ -1,35 +1,33 @@
 ---
 name: sbx
-description: Use Stringbean's sbx orchestrator from inside Grok Build; delegate local repository tasks to Stringbean; or run /sbx with full visible multi-agent orchestration output.
-when-to-use: Run Stringbean; invoke sbx; delegate this task through Stringbean; use /sbx.
-allowed-tools:
-  - run_terminal_command
-user-invocable: true
-disable-model-invocation: true
-metadata:
-  author: Stringbean
-  short-description: Run Stringbean sbx orchestration
+description: Run Stringbean's sbx orchestrator from inside Claude Code; delegate local repository tasks to Stringbean; or run /sbx with full visible multi-agent orchestration output.
+argument-hint: <task> [--ro|--rw] [--mode auto|low|medium|high] [stringbean flags]
+allowed-tools: [Bash, Read, Glob, Grep]
 ---
 
 # Stringbean sbx
 
-Use this skill to invoke Stringbean from inside Grok Build.
+Use this command to invoke Stringbean from inside Claude Code.
+
+## Arguments
+
+The user invoked this with: $ARGUMENTS
 
 ## Procedure
 
-1. Convert the user's request into the exact task text for Stringbean.
+1. Convert `$ARGUMENTS` into the exact task text and flags for Stringbean.
 2. Preserve user-specified Stringbean flags such as `--rw`, `--ro`, `--mode auto`,
    `--mode low`, `--mode medium`, and `--mode high`.
-3. Run the plugin wrapper:
+3. Run the plugin wrapper when this repository checkout is available:
 
 ```bash
-plugins/grok-stringbean/scripts/sbx-grok "<task and flags>"
+plugins/claude-stringbean/scripts/sbx-claude "$ARGUMENTS"
 ```
 
 If the current working directory is not the Stringbean source checkout, run the installed command:
 
 ```bash
-sbx "<task and flags>" --plugin-full-output
+sbx "$ARGUMENTS" --plugin-full-output
 ```
 
 4. Show useful live Stringbean output while the command runs. Lines beginning with

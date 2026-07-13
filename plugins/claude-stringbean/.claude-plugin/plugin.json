@@ -1,0 +1,9 @@
+{
+  "name": "claude-stringbean",
+  "version": "0.1.0",
+  "description": "Use Stringbean's sbx orchestrator from inside Claude Code.",
+  "author": {
+    "name": "Stringbean"
+  },
+  "license": "MIT"
+}

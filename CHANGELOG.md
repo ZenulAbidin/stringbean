@@ -25,6 +25,7 @@
   - `scripts/sbx` source-checkout wrapper for self-bootstrapping local use
 - Codex plugin skill and custom-prompt fallback for invoking `sbx` inside Codex.
 - Grok Build plugin skill for invoking `sbx` as `/sbx` inside Grok.
+- Claude Code plugin skill for invoking `sbx` as `/sbx` inside Claude Code.
 - GitHub Actions CI for tests on Python 3.10, 3.11, and 3.12 plus package build checks.
 - Release, contribution, security, and social launch documentation.
 
@@ -35,6 +36,7 @@
 - Default execution profile is `rw`; `ro` remains available as create-only/read-only behavior.
 - Codex-final output now emits explicit intermediate and final sentinel blocks for Codex UI integration.
 - Grok agents now use Grok Build's headless argv/file prompt transports instead of stdin.
+- Plugin wrappers now use full visible output mode by default; compact `--codex-final` remains available.
 - Local wrapper shims reduce PATH/global environment mismatch issues.
 
 ### Fixed

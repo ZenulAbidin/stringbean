@@ -67,6 +67,9 @@ SBX_BOOLEAN_OPTIONS = {
     "--no-agent-output",
     "--codex-final",
     "--plugin-final",
+    "--plugin-full-output",
+    "--full-output",
+    "--ignore-sandbox-warnings",
     "--codex-progress",
     "--no-codex-progress",
     "--ro",
@@ -679,6 +682,8 @@ def _run_engine(
     execution_profile: str,
     codex_progress: bool = False,
     progress_interval_seconds: float = 30.0,
+    raw_agent_output: bool = False,
+    ignore_sandbox_warnings: bool = False,
 ) -> dict:
     root = _project_root()
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)
@@ -693,6 +698,8 @@ def _run_engine(
         execution_profile=execution_profile,
         codex_progress=codex_progress,
         progress_interval_seconds=progress_interval_seconds,
+        raw_agent_output=raw_agent_output,
+        ignore_sandbox_warnings=ignore_sandbox_warnings,
         repo_root=root,
     )
     summary = asyncio.run(
@@ -927,7 +934,21 @@ def run(
         False,
         "--codex-final",
         "--plugin-final",
-        help="Emit compact plugin progress plus a sentinel-wrapped final block for Codex/Grok prompts/skills.",
+        help="Emit compact plugin progress plus a sentinel-wrapped final block for Codex/Grok/Claude prompts/skills.",
+    ),
+    plugin_full_output: bool = typer.Option(
+        False,
+        "--plugin-full-output",
+        "--full-output",
+        help="Emit full normal output and raw live agent stdout/stderr, then append the sentinel final block for agent plugins.",
+    ),
+    ignore_sandbox_warnings: bool = typer.Option(
+        False,
+        "--ignore-sandbox-warnings",
+        help=(
+            "Diagnostic only: record but do not rollback/fail on Stringbean filesystem sandbox warnings. "
+            "This can leave files modified."
+        ),
     ),
     codex_progress: bool = typer.Option(
         True,
@@ -947,8 +968,10 @@ def run(
     """
     Execute a full workflow run.
     """
+    final_block_output = codex_final or plugin_full_output
+    compact_final_output = codex_final and not plugin_full_output
     cfg_path = config or config_path(_project_root())
-    cfg = _load_config_for_output(cfg_path, suppress_reserved_warnings=codex_final)
+    cfg = _load_config_for_output(cfg_path, suppress_reserved_warnings=compact_final_output)
 
     if orchestrator and orchestrator not in cfg.agents:
         raise typer.BadParameter(f"Unknown orchestrator: {orchestrator}")
@@ -998,16 +1021,20 @@ def run(
             max_review_rounds=max_review_rounds,
         )
     except RuntimeError as exc:
-        if codex_final:
+        if final_block_output:
             _print_codex_final_summary(
                 {"status": "FAILED", "errors": str(exc)},
                 dry_run=False,
             )
         else:
             console.print(f"Configuration error: {exc}")
-        raise typer.Exit(code=1) from exc
-    _apply_output_flags(cfg, quiet=quiet or codex_final, no_agent_stream=no_agent_stream or codex_final)
-    effective_codex_progress = bool(codex_final and codex_progress)
+        raise typer.Exit(code=0 if plugin_full_output else 1) from exc
+    engine_quiet = quiet or compact_final_output
+    suppress_agent_stream = no_agent_stream or compact_final_output
+    if plugin_full_output and not no_agent_stream:
+        cfg.output.stream_agent_output = True
+    _apply_output_flags(cfg, quiet=engine_quiet, no_agent_stream=suppress_agent_stream)
+    effective_codex_progress = bool(final_block_output and codex_progress)
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)
     try:
         out = _run_engine(
@@ -1016,16 +1043,20 @@ def run(
             run_id=selected_run_id,
             no_advisor=no_advisor,
             dry_run=dry_run,
-            quiet=quiet or codex_final,
+            quiet=engine_quiet,
             max_review_rounds=max_review_rounds,
             mode=mode,
             role_modes=role_modes or None,
             execution_profile=resolved_execution_profile,
             codex_progress=effective_codex_progress,
             progress_interval_seconds=codex_progress_interval,
+            raw_agent_output=plugin_full_output,
+            ignore_sandbox_warnings=ignore_sandbox_warnings,
         )
     except Exception as exc:
-        if codex_final:
+        if final_block_output:
+            if plugin_full_output:
+                _print_run_failure(selected_run_id, task, exc)
             _print_codex_final_summary(
                 {
                     "status": "FAILED",
@@ -1036,10 +1067,14 @@ def run(
             )
         else:
             _print_run_failure(selected_run_id, task, exc)
-        raise typer.Exit(code=1) from exc
-    if not codex_final:
+        raise typer.Exit(code=0 if plugin_full_output else 1) from exc
+    if not compact_final_output:
         _print_labeled("Run ID", str(out["run_id"]))
-    _print_run_summary(out["summary"], dry_run=dry_run, codex_final=codex_final)
+    if plugin_full_output:
+        _print_run_summary(out["summary"], dry_run=dry_run, codex_final=False)
+        _print_codex_final_summary(out["summary"], dry_run=dry_run)
+    else:
+        _print_run_summary(out["summary"], dry_run=dry_run, codex_final=codex_final)
 
 
 @app.command()
@@ -1224,7 +1259,8 @@ def _sbx_usage() -> str:
             "  sbx inspect the docs --dry-run",
             '  sbx "Add a typo fix in docs"',
             '  sbx "Build retry logic" --mode high',
-            '  sbx "Inspect through an agent plugin" --plugin-final',
+            '  sbx "Inspect through an agent plugin" --plugin-full-output',
+            '  sbx "Diagnose sandbox blocking" --ignore-sandbox-warnings --plugin-full-output',
         ]
     )
 

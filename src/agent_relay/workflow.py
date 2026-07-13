@@ -178,6 +178,8 @@ class WorkflowEngine:
         codex_progress: bool = False,
         progress_interval_seconds: float = 30.0,
         repo_root: Optional[Path] = None,
+        raw_agent_output: bool = False,
+        ignore_sandbox_warnings: bool = False,
     ) -> None:
         self.config = config
         self.run_dir = run_dir
@@ -186,6 +188,8 @@ class WorkflowEngine:
         self.quiet = quiet
         self.codex_progress = codex_progress
         self.progress_interval_seconds = progress_interval_seconds
+        self.raw_agent_output = raw_agent_output
+        self.ignore_sandbox_warnings = ignore_sandbox_warnings
         self.execution_profile = normalize_execution_profile(execution_profile)
         self.adapters = build_adapters(config)
         self.events = RunEventStore(self.run_dir.events_path)
@@ -271,6 +275,14 @@ class WorkflowEngine:
         if self.quiet and not self.codex_progress:
             return
         self._ensure_agent_stream_formatter().feed(chunk)
+
+    def _stream_raw_agent_chunk(self, chunk: str) -> None:
+        if not chunk:
+            return
+        if self._agent_output_redaction_values:
+            chunk = redact_environment_text(chunk, self._agent_output_redaction_values)
+        print(chunk, end="", flush=True)
+        self._agent_stream_open_line = not chunk.endswith("\n")
 
     def _write_codex_agent_stream_line(self, line: str) -> None:
         if self._agent_output_redaction_values:
@@ -1224,7 +1236,9 @@ class WorkflowEngine:
 
         stream_agent_output = bool(self.config.output.stream_agent_output and not self.quiet)
         codex_agent_output = bool(self.codex_progress and not stream_agent_output)
-        if stream_agent_output:
+        if stream_agent_output and self.raw_agent_output:
+            self._log(f"[stringbean] starting {role} agent: {agent_name}")
+        elif stream_agent_output:
             self._agent_stream_formatter = LiveStreamFormatter(self._write_agent_stream_line)
             self._log(f"[stringbean] starting {role} agent: {agent_name}")
         elif codex_agent_output:
@@ -1240,6 +1254,7 @@ class WorkflowEngine:
         )
         previous_redaction_values = self._agent_output_redaction_values
         self._agent_output_redaction_values = redaction_values
+        callback = self._stream_raw_agent_chunk if self.raw_agent_output and stream_agent_output else callback
         try:
             result = await run_subprocess(
                 RunnerConfig(
@@ -1341,9 +1356,17 @@ class WorkflowEngine:
             call_result.metadata["allowed_create_paths"] = allowed_paths
             call_result.metadata["denied_change_paths"] = denied_paths
             if denied_paths:
-                self._rollback_read_only_changes(changed_path_keys, baseline, after, baseline_contents)
-                parse_error = self._policy_violation_message(agent_name, denied_paths)
-                call_result.parse_error = parse_error
+                if self.ignore_sandbox_warnings:
+                    call_result.metadata["ignored_sandbox_warning"] = True
+                    self._progress(
+                        "Progress: Ignoring Stringbean sandbox warning by explicit user flag; "
+                        f"denied paths were: {', '.join(denied_paths[:4])}"
+                        f"{'…' if len(denied_paths) > 4 else ''}."
+                    )
+                else:
+                    self._rollback_read_only_changes(changed_path_keys, baseline, after, baseline_contents)
+                    parse_error = self._policy_violation_message(agent_name, denied_paths)
+                    call_result.parse_error = parse_error
         call_result.metadata.update(policy_metadata)
         if stored_payload and parse_error is None:
             self._remember_agent_response(role, stored_payload)
@@ -1354,7 +1377,7 @@ class WorkflowEngine:
         self.state.write()
 
         retry_limit = max(0, int(self.config.workflow.max_policy_violation_retries))
-        if denied_paths and policy_retry_attempt < retry_limit:
+        if denied_paths and not self.ignore_sandbox_warnings and policy_retry_attempt < retry_limit:
             next_attempt = policy_retry_attempt + 1
             self._mark(
                 stage,

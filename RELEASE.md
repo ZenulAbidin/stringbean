@@ -15,6 +15,7 @@ This project uses a lightweight release flow you can run from a clean local chec
   - `src/agent_relay/__init__.py` `__version__`
   - `plugins/stringbean/.codex-plugin/plugin.json` version
   - `plugins/grok-stringbean/.grok-plugin/plugin.json` version
+  - `plugins/claude-stringbean/.claude-plugin/plugin.json` version
   - `CHANGELOG.md`
 - [ ] Run full tests:
 
@@ -28,6 +29,9 @@ This project uses a lightweight release flow you can run from a clean local chec
   stringbean --version
   sbx --help
   ./plugins/grok-stringbean/scripts/sbx-grok "Quick plugin smoke test" --dry-run
+  ./plugins/stringbean/scripts/sbx-codex "Quick plugin smoke test" --dry-run
+  ./plugins/claude-stringbean/scripts/sbx-claude "Quick plugin smoke test" --dry-run
+  sbx "Quick full-output smoke test" --dry-run --plugin-full-output
   stringbean init
   stringbean doctor
   stringbean status
@@ -40,6 +44,7 @@ This project uses a lightweight release flow you can run from a clean local chec
   ./scripts/sbx "Quick smoke test" --dry-run --mode low
   sbx "Quick smoke test through installed entrypoint" --dry-run --mode low
   grok plugin validate plugins/grok-stringbean
+  claude plugin validate plugins/claude-stringbean
   ```
 
 ## 2) Build & package

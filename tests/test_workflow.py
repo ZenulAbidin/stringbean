@@ -1659,6 +1659,73 @@ print(json.dumps({
     assert baseline.read_text(encoding="utf-8") == "baseline\n"
 
 
+def test_ignore_sandbox_warnings_allows_read_only_role_edits_for_diagnostics(tmp_path: Path):
+    _init_git_repo(tmp_path)
+    baseline = tmp_path / "tracked.txt"
+    baseline.write_text("baseline\n", encoding="utf-8")
+    _commit_all(tmp_path)
+
+    script = tmp_path / "reader.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+Path("tracked.txt").write_text("diagnostic changed\\n", encoding="utf-8")
+print(json.dumps({
+    "status": "completed",
+    "summary": "modified under diagnostic bypass",
+    "files_changed": ["tracked.txt"],
+    "commands_run": [],
+    "tests": [],
+    "remaining_issues": [],
+    "handoff_notes": []
+}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    cfg = Config(
+        agents={
+            "reader": AgentConfig(
+                name="reader",
+                adapter="generic",
+                role="implementer",
+                permissions="read_only",
+                command=[str(script)],
+            )
+        },
+        workflow=WorkflowConfig(orchestrator="reader", implementers=["reader"], reviewers=["reader"]),
+        output=OutputConfig(),
+    )
+    run_dir = create_new_run(
+        tmp_path,
+        "run-ignore-sandbox-warnings",
+        "RW policy diagnostic",
+        10,
+        {},
+        execution_profile="rw",
+    )
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(
+        cfg,
+        run_dir,
+        state,
+        execution_profile="rw",
+        ignore_sandbox_warnings=True,
+    )
+
+    result, parse_error = asyncio.run(
+        engine._run_agent("reader", "implementer", RunStatus.IMPLEMENTING, "prompt", ImplementerResponse)
+    )
+
+    assert parse_error is None
+    assert result.parse_error is None
+    assert result.metadata["denied_change_paths"] == ["tracked.txt"]
+    assert result.metadata["ignored_sandbox_warning"] is True
+    assert baseline.read_text(encoding="utf-8") == "diagnostic changed\n"
+
+
 def test_rw_profile_rejects_read_only_fallback_edits(tmp_path: Path):
     baseline = tmp_path / "tracked.txt"
     baseline.write_text("baseline\n", encoding="utf-8")

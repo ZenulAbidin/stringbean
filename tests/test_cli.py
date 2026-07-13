@@ -152,6 +152,23 @@ def test_sbx_plugin_final_alias_emits_sentinel_block():
     assert "STRINGBEAN_FINAL_END" in result.stdout
 
 
+def test_sbx_plugin_full_output_emits_normal_output_and_sentinel_block():
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [str(repo / "scripts" / "sbx"), "enumerate", "bugs", "--dry-run", "--plugin-full-output"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Run ID:" in result.stdout
+    assert "Dry run mode - no agents were launched." in result.stdout
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "Status: DRY_RUN" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
 def test_codex_plugin_sbx_wrapper_emits_sentinel_block():
     repo = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -162,6 +179,8 @@ def test_codex_plugin_sbx_wrapper_emits_sentinel_block():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert "Run ID:" in result.stdout
+    assert "Dry run mode - no agents were launched." in result.stdout
     assert "STRINGBEAN_FINAL_START" in result.stdout
     assert "STRINGBEAN_RESULT_START" in result.stdout
     assert "Status: DRY_RUN" in result.stdout
@@ -179,6 +198,27 @@ def test_grok_plugin_sbx_wrapper_emits_sentinel_block():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert "Run ID:" in result.stdout
+    assert "Dry run mode - no agents were launched." in result.stdout
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "STRINGBEAN_RESULT_START" in result.stdout
+    assert "Status: DRY_RUN" in result.stdout
+    assert "STRINGBEAN_RESULT_END" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
+def test_claude_plugin_sbx_wrapper_emits_sentinel_block():
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [str(repo / "plugins" / "claude-stringbean" / "scripts" / "sbx-claude"), "enumerate", "bugs", "--dry-run"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Run ID:" in result.stdout
+    assert "Dry run mode - no agents were launched." in result.stdout
     assert "STRINGBEAN_FINAL_START" in result.stdout
     assert "STRINGBEAN_RESULT_START" in result.stdout
     assert "Status: DRY_RUN" in result.stdout
@@ -208,6 +248,22 @@ def test_codex_final_rejects_local_fallback_cat_config_with_sentinel_block(tmp_p
     result = runner.invoke(cli.app, ["run", "real task", "--codex-final"])
 
     assert result.exit_code == 1
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "STRINGBEAN_RESULT_START" in result.stdout
+    assert "Status: FAILED" in result.stdout
+    assert "Configured placeholder agent(s) cannot perform a real run" in result.stdout
+    assert "STRINGBEAN_RESULT_END" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
+def test_plugin_full_output_reports_config_failure_but_exits_zero(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    init = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
+    assert init.exit_code == 0
+
+    result = runner.invoke(cli.app, ["run", "real task", "--plugin-full-output"])
+
+    assert result.exit_code == 0
     assert "STRINGBEAN_FINAL_START" in result.stdout
     assert "STRINGBEAN_RESULT_START" in result.stdout
     assert "Status: FAILED" in result.stdout
@@ -286,6 +342,29 @@ def test_codex_final_catches_engine_exception_with_sentinel_block(tmp_path: Path
     assert "Artifacts:" in result.stdout
     assert "STRINGBEAN_FINAL_END" in result.stdout
     assert "Run failed:" not in result.stdout
+    assert "Traceback" not in result.stdout
+
+
+def test_plugin_full_output_catches_engine_exception_but_exits_zero(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".stringbean").mkdir()
+    cfg = cli._preset_config("D")
+    cfg.repository.require_git = False
+    monkeypatch.setattr(cli, "load_config", lambda _path: cfg)
+
+    def fail_engine(**_kwargs):
+        raise RuntimeError("agent exited with status 1")
+
+    monkeypatch.setattr(cli, "_run_engine", fail_engine)
+
+    result = runner.invoke(cli.app, ["run", "inspect tmp", "--plugin-full-output"])
+
+    assert result.exit_code == 0
+    assert "Run failed: agent exited with status 1" in result.stdout
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "Status: FAILED" in result.stdout
+    assert "Error: agent exited with status 1" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
     assert "Traceback" not in result.stdout
 
 

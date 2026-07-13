@@ -1,0 +1,16 @@
+include CHANGELOG.md
+include CONTRIBUTING.md
+include RELEASE.md
+include SECURITY.md
+recursive-include .agents *.json
+recursive-include .claude-plugin *.json
+recursive-include codex-prompts *.md
+recursive-include docs *.md
+recursive-include plugins *
+recursive-include scripts *
+prune .stringbean
+prune .stringbean-runtime
+prune build
+prune dist
+global-exclude __pycache__
+global-exclude *.py[cod]

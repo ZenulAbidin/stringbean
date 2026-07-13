@@ -17,9 +17,9 @@ else
 fi
 
 for arg in "$@"; do
-  if [[ "$arg" == "--codex-final" ]]; then
+  if [[ "$arg" == "--plugin-full-output" || "$arg" == "--full-output" || "$arg" == "--codex-final" || "$arg" == "--plugin-final" ]]; then
     exec "$SBX" "$@"
   fi
 done
 
-exec "$SBX" "$@" --codex-final
+exec "$SBX" "$@" --plugin-full-output

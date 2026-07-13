@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "stringbean-local",
+  "description": "Local Stringbean Claude Code plugin marketplace.",
+  "owner": {
+    "name": "Stringbean"
+  },
+  "plugins": [
+    {
+      "name": "claude-stringbean",
+      "description": "Use Stringbean's sbx orchestrator from inside Claude Code.",
+      "author": {
+        "name": "Stringbean"
+      },
+      "category": "development",
+      "source": "./plugins/claude-stringbean",
+      "homepage": "https://github.com/stringbean/stringbean"
+    }
+  ]
+}

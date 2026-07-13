@@ -140,7 +140,9 @@ stringbean run --dry-run "Implement auth checks"
   - `--no-advisor`
   - `--dry-run`
   - `--no-agent-stream` / `--no-agent-output` hides the live provider stdout/stderr stream. By default Stringbean shows selective formatted provider output: prompt echoes and CLI boilerplate are suppressed, visible escapes such as `\n` are decoded, structured JSON answers are collapsed into readable result lines, tool output bodies are capped at three visible lines, terminal output uses TTY-aware bold/white labels, and raw stdout/stderr are still retained in run artifacts.
-  - `--codex-final` / `--plugin-final` emits intermediate status and sanitized agent-output lines prefixed with `STRINGBEAN_INTERMEDIATE:` and a final block wrapped in `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END`. The final block still contains the compatibility `STRINGBEAN_RESULT_START` / `STRINGBEAN_RESULT_END` result block for Codex/Grok plugin wrappers to mirror into the visible final answer.
+  - `--codex-final` / `--plugin-final` emits compact intermediate status and sanitized agent-output lines prefixed with `STRINGBEAN_INTERMEDIATE:` plus a final block wrapped in `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END`.
+  - `--plugin-full-output` / `--full-output` emits normal visible output and raw live agent stdout/stderr, then appends the same final sentinel block for Codex/Grok/Claude plugin wrappers. It exits 0 after printing the final block even when the Stringbean result says `FAILED`, so the host plugin can still read and report the failure.
+  - `--ignore-sandbox-warnings` is a diagnostic escape hatch: Stringbean records filesystem sandbox warnings but does not rollback/fail only because of those warnings. This can leave files modified.
   - `--quiet`
   - `--run-id`
 - `stringbean resume RUN_ID`
@@ -194,7 +196,7 @@ If `sbx` is still being resolved to an old global script, this hook also defines
 
 ### Codex plugin wrapper
 
-For use inside Codex, prefer the local Stringbean plugin. It installs a `stringbean:sbx` skill that tells Codex to run `sbx --codex-final`, surface `STRINGBEAN_INTERMEDIATE:` progress and sanitized agent-output lines during long runs, and mirror the `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END` result into the visible final answer.
+For use inside Codex, prefer the local Stringbean plugin. It installs a `stringbean:sbx` skill that tells Codex to run `sbx --plugin-full-output`, surface visible run output during long runs, and mirror the `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END` result into the visible final answer.
 
 Install or refresh it with:
 
@@ -211,13 +213,13 @@ $sbx fix typo in README --mode high
 
 If Codex displays the plugin-qualified skill name, choose `stringbean:sbx`.
 
-`--codex-final` keeps raw provider transcripts and hidden reasoning hidden, but explicitly marked intermediate progress and sanitized agent-output lines are on by default. Use `--no-codex-progress` for a silent run, or `--codex-progress-interval 10` to make long-running heartbeat lines more frequent.
+`--plugin-full-output` is intentionally verbose for agent-plugin use. Use `--codex-final` when compact sanitized output is preferred, `--no-codex-progress` for fewer progress lines, or `--codex-progress-interval 10` to make long-running heartbeat lines more frequent.
 
 Codex plugins are installed from this repo's local marketplace at `.agents/plugins/marketplace.json`.
 
 ### Grok Build plugin wrapper
 
-For use inside Grok Build, install the local Grok plugin. It provides a user-invocable `sbx` skill for `/sbx ...` that runs `sbx --plugin-final`, surfaces `STRINGBEAN_INTERMEDIATE:` progress, and mirrors the final sentinel result into Grok's visible answer.
+For use inside Grok Build, install the local Grok plugin. It provides a user-invocable `sbx` skill for `/sbx ...` that runs `sbx --plugin-full-output`, surfaces visible run output, and mirrors the final sentinel result into Grok's visible answer.
 
 Install or refresh it with:
 
@@ -233,6 +235,27 @@ Then restart Grok Build or open a new task and invoke:
 ```
 
 If Grok displays plugin-qualified skill names, choose `grok-stringbean:sbx`.
+
+### Claude Code plugin wrapper
+
+For use inside Claude Code, install the local Claude plugin. It provides a user-invoked `sbx` skill for `/sbx ...` that runs `sbx --plugin-full-output`, surfaces visible run output, and mirrors the final sentinel result into Claude's visible answer.
+
+Install or refresh it with:
+
+```bash
+scripts/install-claude-plugin.sh
+```
+
+Then restart Claude Code or open a new task and invoke:
+
+```text
+/sbx inspect whether README exists
+/sbx fix typo in README --mode high
+```
+
+If Claude displays plugin-qualified skill names, choose `claude-stringbean:sbx`.
+
+Claude plugins are installed from this repo's local marketplace at `.claude-plugin/marketplace.json`.
 
 ### Codex custom prompt wrapper
 
