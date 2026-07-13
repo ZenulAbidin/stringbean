@@ -25,8 +25,8 @@ plugins/stringbean/scripts/sbx-codex "<task and flags>"
 
 3. Preserve user-specified Stringbean flags such as `--rw`, `--ro`, `--mode auto`,
    `--mode low`, `--mode medium`, and `--mode high`.
-4. If the user asks for write-capable work and does not specify a permissions flag, use `--rw`.
-   Otherwise default to Stringbean's normal read-oriented behavior.
+4. Do not add a permissions flag unless the user asks for one. Stringbean's default profile is
+   `rw`; use `--ro` only when the user explicitly asks for create-only/read-only behavior.
 5. After the command finishes, find the block between:
 
 ```text
