@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +20,7 @@ from .config import (
     Config,
     PROJECT_DIR_NAME,
     PROJECT_NAME,
+    UnsupportedConfigWarning,
     active_project_dir,
     OutputConfig,
     RepositoryConfig,
@@ -683,6 +685,14 @@ def _apply_output_flags(cfg: Config, quiet: bool, no_agent_stream: bool) -> None
         cfg.output.stream_agent_output = False
 
 
+def _load_config_for_output(path: Path, *, suppress_reserved_warnings: bool = False) -> Config:
+    if not suppress_reserved_warnings:
+        return load_config(path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UnsupportedConfigWarning)
+        return load_config(path)
+
+
 def _print_run_summary(summary: dict, *, dry_run: bool, codex_final: bool = False) -> None:
     if codex_final:
         _print_codex_final_summary(summary, dry_run=dry_run)
@@ -718,6 +728,7 @@ def _print_labeled(label: str, value: str) -> None:
 
 
 def _print_codex_final_summary(summary: dict, *, dry_run: bool) -> None:
+    print("STRINGBEAN_FINAL_START")
     print("STRINGBEAN_RESULT_START")
     if dry_run:
         print("Status: DRY_RUN")
@@ -745,6 +756,7 @@ def _print_codex_final_summary(summary: dict, *, dry_run: bool) -> None:
         if event_log:
             print(f"Artifacts: {Path(str(event_log)).parent}")
     print("STRINGBEAN_RESULT_END")
+    print("STRINGBEAN_FINAL_END")
 
 
 def _resolve_execution_profile(profile: str, ro: bool, rw: bool) -> str:
@@ -812,7 +824,7 @@ def run(
     Execute a full workflow run.
     """
     cfg_path = config or config_path(_project_root())
-    cfg = load_config(cfg_path)
+    cfg = _load_config_for_output(cfg_path, suppress_reserved_warnings=codex_final)
 
     if orchestrator and orchestrator not in cfg.agents:
         raise typer.BadParameter(f"Unknown orchestrator: {orchestrator}")

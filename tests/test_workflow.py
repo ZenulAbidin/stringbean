@@ -618,6 +618,8 @@ def test_codex_progress_prints_sanitized_stage_updates(tmp_path: Path, capsys):
 
     captured = capsys.readouterr()
     assert result["status"] == "COMPLETED"
+    assert "STRINGBEAN_INTERMEDIATE: Progress: Selected agents" in captured.out
+    assert "STRINGBEAN_INTERMEDIATE: Agent: orchestrator planner started" in captured.out
     assert "Progress: Selected agents" in captured.out
     assert "Agent: orchestrator planner started" in captured.out
     assert "Progress: Planning started" in captured.out

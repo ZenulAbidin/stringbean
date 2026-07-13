@@ -253,7 +253,7 @@ class WorkflowEngine:
         if self._agent_stream_open_line:
             print("", flush=True)
             self._agent_stream_open_line = False
-        print(message, flush=True)
+        print(f"STRINGBEAN_INTERMEDIATE: {message}", flush=True)
 
     @staticmethod
     def _format_elapsed(seconds: float) -> str:

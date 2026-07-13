@@ -27,29 +27,38 @@ plugins/stringbean/scripts/sbx-codex "<task and flags>"
    `--mode low`, `--mode medium`, and `--mode high`.
 4. Do not add a permissions flag unless the user asks for one. Stringbean's default profile is
    `rw`; use `--ro` only when the user explicitly asks for create-only/read-only behavior.
-5. After the command finishes, find the block between:
+5. Treat lines beginning with `STRINGBEAN_INTERMEDIATE:` as live status updates only.
+   They are not final output and should be summarized briefly while the command runs.
+6. After the command finishes, find the final block between:
+
+```text
+STRINGBEAN_FINAL_START
+STRINGBEAN_FINAL_END
+```
+
+Inside it, keep backward compatibility by reading the result block between:
 
 ```text
 STRINGBEAN_RESULT_START
 STRINGBEAN_RESULT_END
 ```
 
-6. The visible final answer must report the useful fields from that block, especially:
+7. The visible final answer must report the useful fields from that block, especially:
    `Status`, `Result`, `Tasks`, `Review rounds`, and `Artifacts`.
 
 ## During the run
 
-Stringbean emits compact progress lines before the final sentinel block:
+Stringbean emits explicitly marked compact progress lines before the final block:
 
 ```text
-Progress: ...
-Agent: ...
+STRINGBEAN_INTERMEDIATE: Progress: ...
+STRINGBEAN_INTERMEDIATE: Agent: ...
 ```
 
 Use those lines for brief user-facing updates if the run takes time. These lines are already
 sanitized: they describe phases, selected agents, parsed summaries, verdicts, and bounded
-still-running heartbeats. Do not invent generic progress text when a specific `Progress:` or
-`Agent:` line is available.
+still-running heartbeats. Do not confuse them with final output, and do not invent generic
+progress text when a specific `STRINGBEAN_INTERMEDIATE:` line is available.
 
 ## Output rules
 

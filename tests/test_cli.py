@@ -98,9 +98,12 @@ def test_sbx_codex_final_emits_sentinel_block():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert "UnsupportedConfigWarning" not in result.stderr
+    assert "STRINGBEAN_FINAL_START" in result.stdout
     assert "STRINGBEAN_RESULT_START" in result.stdout
     assert "Status: DRY_RUN" in result.stdout
     assert "STRINGBEAN_RESULT_END" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
     assert "'dry_run': True" not in result.stdout
 
 
@@ -114,9 +117,11 @@ def test_codex_plugin_sbx_wrapper_emits_sentinel_block():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert "STRINGBEAN_FINAL_START" in result.stdout
     assert "STRINGBEAN_RESULT_START" in result.stdout
     assert "Status: DRY_RUN" in result.stdout
     assert "STRINGBEAN_RESULT_END" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
 
 
 def test_init_and_status_cycle(tmp_path: Path, monkeypatch):
