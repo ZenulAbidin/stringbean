@@ -27,6 +27,7 @@ class LiveStreamFormatter:
         self._json_buffer: list[str] | None = None
         self._fenced_json_buffer: list[str] | None = None
         self._streaming_text_chunks: list[str] = []
+        self._claude_tools: dict[str, str] = {}
         self._recent_output: list[str] = []
         self._lock = Lock()
 
@@ -81,6 +82,10 @@ class LiveStreamFormatter:
                 return []
             if event_type == "end":
                 return self._take_streaming_text()
+
+            claude_output = self._format_claude_event(streaming_event)
+            if claude_output is not None:
+                return claude_output
 
         if self._suppress_next_token_count:
             self._suppress_next_token_count = False
@@ -150,6 +155,100 @@ class LiveStreamFormatter:
             return formatted or []
 
         return format_stream_line(line)
+
+    def _format_claude_event(self, event: dict[str, Any]) -> list[str] | None:
+        if not _looks_like_claude_event(event):
+            return None
+
+        event_type = str(event.get("type") or "").lower()
+        if event_type == "system":
+            if str(event.get("subtype") or "").lower() != "api_retry":
+                return []
+            attempt = event.get("attempt")
+            maximum = event.get("max_retries")
+            delay_ms = event.get("retry_delay_ms")
+            retry = f"{attempt}/{maximum}" if attempt is not None and maximum is not None else str(attempt or "")
+            delay = ""
+            if isinstance(delay_ms, (int, float)):
+                delay = f" in {max(1, round(delay_ms / 1000))}s"
+            return [f"Claude: API retry {retry}{delay}".rstrip()]
+
+        if event_type == "assistant":
+            return self._format_claude_content(event.get("message"), tool_results=False)
+
+        if event_type == "user":
+            return self._format_claude_content(event.get("message"), tool_results=True)
+
+        if event_type == "result":
+            result = event.get("result")
+            if isinstance(result, str) and result.strip():
+                return _format_assistant_text(result)
+            if event.get("is_error"):
+                error = event.get("error") or event.get("subtype") or "Claude run failed"
+                return [f"error: {_shorten_line(str(error))}"]
+            return []
+
+        if event_type == "stream_event":
+            nested = event.get("event")
+            if isinstance(nested, dict) and _is_reasoning_event(nested):
+                return []
+            return []
+
+        if event_type == "rate_limit_event":
+            info = event.get("rate_limit_info")
+            if not isinstance(info, dict):
+                return []
+            status = str(info.get("status") or "").lower()
+            if status in {"", "allowed", "ok"}:
+                return []
+            limit_type = str(info.get("rateLimitType") or "rate limit")
+            return [f"Claude: {limit_type} status {status}"]
+
+        return []
+
+    def _format_claude_content(self, message: Any, *, tool_results: bool) -> list[str]:
+        if not isinstance(message, dict):
+            return []
+        content = message.get("content")
+        if not isinstance(content, list):
+            return []
+
+        output: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").lower()
+            if block_type in {"thinking", "reasoning", "redacted_thinking"}:
+                continue
+            if block_type == "text" and not tool_results:
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    output.extend(_format_assistant_text(text))
+                continue
+            if block_type == "tool_use" and not tool_results:
+                name = str(block.get("name") or "tool")
+                tool_id = str(block.get("id") or "")
+                if tool_id:
+                    self._claude_tools[tool_id] = name
+                summary = _claude_tool_summary(name, block.get("input"))
+                output.append(f"Tool Call: {summary}")
+                continue
+            if block_type == "tool_result" and tool_results:
+                tool_id = str(block.get("tool_use_id") or "")
+                name = self._claude_tools.get(tool_id, "tool")
+                result = _extract_event_text(block.get("content")) or ""
+                lines = [
+                    _shorten_line(line.strip())
+                    for line in decode_visible_escapes(result).splitlines()
+                    if line.strip()
+                ][:3]
+                state = "failed" if block.get("is_error") else "completed"
+                if lines:
+                    output.append(f"Executed: {name} {state} — {lines[0]}")
+                    output.extend(f"  {line}" for line in lines[1:])
+                else:
+                    output.append(f"Executed: {name} {state}")
+        return output
 
     def _try_finish_json_buffer(self) -> list[str] | None:
         if self._json_buffer is None:
@@ -243,6 +342,58 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     if isinstance(value, str):
         return {"message": value}
     return {"value": value}
+
+
+def _looks_like_claude_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("type") or "").lower()
+    if event_type not in {
+        "system",
+        "assistant",
+        "user",
+        "result",
+        "stream_event",
+        "rate_limit_event",
+        "prompt_suggestion",
+    }:
+        return False
+    if "session_id" in event or "uuid" in event:
+        return True
+    message = event.get("message")
+    return event_type in {"assistant", "user"} and isinstance(message, dict) and "content" in message
+
+
+def _format_assistant_text(text: str) -> list[str]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    fenced = re.search(
+        r"```(?:json|jsonc)\s*(.*?)\s*```",
+        stripped,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if fenced is None:
+        fenced = re.fullmatch(
+            r"```\s*(.*?)\s*```",
+            stripped,
+            flags=re.DOTALL,
+        )
+    candidate = fenced.group(1).strip() if fenced else stripped
+    try:
+        value = json.loads(candidate)
+    except Exception:
+        return [f"assistant: {_shorten_line(line)}" for line in stripped.splitlines() if line.strip()]
+    return list(_format_json_value(value))
+
+
+def _claude_tool_summary(name: str, value: Any) -> str:
+    if not isinstance(value, dict):
+        return name
+    for key in ("command", "file_path", "path", "pattern", "query", "url"):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            one_line = " ".join(part.strip() for part in item.splitlines() if part.strip())
+            return f"{name} — {_shorten_line(one_line)}"
+    return name
 
 
 def _format_json_event(event: dict[str, Any]) -> Iterable[str]:

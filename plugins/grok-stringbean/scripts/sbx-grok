@@ -22,7 +22,7 @@ HAS_PROGRESS_INTERVAL=false
 
 for arg in "$@"; do
   case "$arg" in
-    --plugin-full-output|--full-output|--plugin-final|--codex-final)
+    --plugin-full-output|--full-output|--plugin-compact-output|--plugin-live-output|--plugin-final|--codex-final)
       HAS_OUTPUT_MODE=true
       ;;
     --codex-progress-interval|--codex-progress-interval=*)

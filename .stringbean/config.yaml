@@ -4,11 +4,11 @@ agents:
     command:
     - claude
     - --model
-    - fable-5
+    - claude-fable-5
     environment_overrides: {}
     fallback_agent: null
     mode: medium
-    model: fable-5
+    model: claude-fable-5
     name: claude-fable-5
     permissions: read_only
     prompt_transport: stdin
@@ -20,11 +20,11 @@ agents:
     command:
     - claude
     - --model
-    - opus-4.8
+    - claude-opus-4-8
     environment_overrides: {}
     fallback_agent: null
     mode: high
-    model: opus-4.8
+    model: claude-opus-4-8
     name: claude-opus-4-8
     permissions: read_only
     prompt_transport: stdin
@@ -36,11 +36,11 @@ agents:
     command:
     - claude
     - --model
-    - sonnet-5
+    - claude-sonnet-5
     environment_overrides: {}
     fallback_agent: null
     mode: low
-    model: sonnet-5
+    model: claude-sonnet-5
     name: claude-sonnet-5
     permissions: read_only
     prompt_transport: stdin

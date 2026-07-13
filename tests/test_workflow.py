@@ -762,6 +762,135 @@ def test_agent_stream_formats_grok_events_and_hides_thoughts(tmp_path: Path, cap
     assert "Result: completed — repository listed" in captured.out
 
 
+def test_agent_stream_formats_claude_events_and_hides_thinking(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-claude", "Stream Claude", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    engine._stream_agent_chunk(
+        json.dumps(
+            {
+                "type": "rate_limit_event",
+                "session_id": "session-1",
+                "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"},
+            }
+        )
+        + "\n"
+    )
+    engine._stream_agent_chunk(
+        json.dumps(
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "session-1",
+                "model": "claude-sonnet-5",
+                "tools": ["Bash", "Read"],
+            }
+        )
+        + "\n"
+    )
+    engine._stream_agent_chunk(
+        json.dumps(
+            {
+                "type": "assistant",
+                "session_id": "session-1",
+                "message": {
+                    "content": [
+                        {"type": "thinking", "thinking": "private scratch"},
+                        {
+                            "type": "tool_use",
+                            "id": "tool-1",
+                            "name": "Bash",
+                            "input": {"command": "printf 'one\\ntwo\\nthree\\nfour\\n'"},
+                        },
+                    ]
+                },
+            }
+        )
+        + "\n"
+    )
+    engine._stream_agent_chunk(
+        json.dumps(
+            {
+                "type": "user",
+                "session_id": "session-1",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tool-1",
+                            "content": "one\ntwo\nthree\nfour must stay hidden",
+                        }
+                    ]
+                },
+            }
+        )
+        + "\n"
+    )
+    result = {
+        "status": "completed",
+        "summary": "claude stream worked",
+        "files_changed": [],
+        "commands_run": ["printf"],
+        "tests": [],
+        "remaining_issues": [],
+        "handoff_notes": [],
+    }
+    engine._stream_agent_chunk(
+        json.dumps({"type": "result", "session_id": "session-1", "result": json.dumps(result)})
+        + "\n"
+    )
+
+    captured = capsys.readouterr()
+    assert "private scratch" not in captured.out
+    assert "rate_limit" not in captured.out
+    assert "tools" not in captured.out
+    assert "Tool Call: Bash — printf" in captured.out
+    assert "Executed: Bash completed — one" in captured.out
+    assert "  two" in captured.out
+    assert "  three" in captured.out
+    assert "four must stay hidden" not in captured.out
+    assert "Result: completed — claude stream worked" in captured.out
+
+
+def test_agent_stream_compacts_claude_fenced_json_with_surrounding_text(tmp_path: Path, capsys):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    run_dir = create_new_run(tmp_path, "run-stream-claude-fence", "Stream Claude", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+    payload = {
+        "status": "completed",
+        "summary": "compact fenced result",
+        "files_changed": [],
+        "commands_run": ["pwd"],
+        "tests": [],
+        "remaining_issues": [],
+        "handoff_notes": [],
+    }
+    text = f"Inspection complete.\n```json\n{json.dumps(payload, indent=2)}\n```\nDone."
+
+    engine._stream_agent_chunk(
+        json.dumps(
+            {
+                "type": "assistant",
+                "session_id": "session-1",
+                "message": {"content": [{"type": "text", "text": text}]},
+            }
+        )
+        + "\n"
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == "Result: completed — compact fenced result\n"
+    assert "```" not in captured.out
+    assert '"files_changed"' not in captured.out
+
+
 def test_json_tool_output_is_capped_at_three_lines(tmp_path: Path, capsys):
     fake = tmp_path / "agent.sh"
     write_fake_agent(tmp_path, "agent.sh")
@@ -2385,6 +2514,39 @@ def test_role_mode_override_selects_matching_agent(tmp_path: Path):
     result = asyncio.run(engine.run("small task", dry_run=True, role_modes={"advisor": "high"}))
 
     assert result["selected_agents"]["advisor"] == "advisor-high"
+
+
+def test_explicit_agent_override_wins_over_mode_selection(tmp_path: Path):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    cfg.agents["low-orchestrator"] = AgentConfig(
+        name="low-orchestrator",
+        adapter="generic",
+        role="orchestrator",
+        permissions="read_only",
+        command=[str(fake)],
+        model="cheap-low-model",
+        environment_overrides={"AGENT_ROLE": "planner"},
+        mode="low",
+    )
+    cfg.workflow.orchestrator = "planner"
+
+    run_dir = create_new_run(tmp_path, "run-explicit-agent", "Small task", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    result = asyncio.run(
+        engine.run(
+            "small task",
+            dry_run=True,
+            global_mode="low",
+            agent_overrides={"orchestrator": "planner"},
+        )
+    )
+
+    assert result["selected_agents"]["orchestrator"] == "planner"
+    assert result["selection_rationale"]["orchestrator"].startswith("explicitly selected planner")
 
 
 def test_auto_mode_infers_mode_from_task_complexity(tmp_path: Path):

@@ -5,11 +5,11 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--policy-retries N] [--ignore-sandbox-warnings] [--plugin-full-output] [stringbean run flags]
-  sbx "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--policy-retries N] [--ignore-sandbox-warnings] [--plugin-full-output] [stringbean run flags]
-  sbx run TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--ignore-sandbox-warnings] [--plugin-full-output] [more flags]
-  stringbean sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--ignore-sandbox-warnings] [--plugin-full-output] [more flags]
-  stringbean run "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--ignore-sandbox-warnings] [--plugin-full-output] [more flags]
+  sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--policy-retries N] [--ignore-sandbox-warnings] [--plugin-compact-output|--plugin-full-output] [stringbean run flags]
+  sbx "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--policy-retries N] [--ignore-sandbox-warnings] [--plugin-compact-output|--plugin-full-output] [stringbean run flags]
+  sbx run TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--ignore-sandbox-warnings] [--plugin-compact-output|--plugin-full-output] [more flags]
+  stringbean sbx TASK WORDS [--ro|--rw] [--mode auto|low|medium|high] [--ignore-sandbox-warnings] [--plugin-compact-output|--plugin-full-output] [more flags]
+  stringbean run "TASK" [--ro|--rw] [--mode auto|low|medium|high] [--ignore-sandbox-warnings] [--plugin-compact-output|--plugin-full-output] [more flags]
 
 Examples:
   sbx inspect the docs
@@ -18,6 +18,7 @@ Examples:
   sbx "Inspect without modifying existing files" --ro
   sbx "Quietly inspect the repo" --no-agent-stream
   sbx "Inspect through Codex TUI" --codex-final
+  sbx "Inspect through a compact agent plugin" --plugin-compact-output
   sbx "Inspect through an agent plugin with full output" --plugin-full-output
   sbx "Diagnose sandbox blocking" --ignore-sandbox-warnings --plugin-full-output
   sbx "Audit without retrying policy violations" --policy-retries 0

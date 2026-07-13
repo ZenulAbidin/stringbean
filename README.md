@@ -142,6 +142,7 @@ stringbean run --dry-run "Implement auth checks"
   - `--no-agent-stream` / `--no-agent-output` hides the live provider stdout/stderr stream. By default Stringbean shows selective formatted provider output: prompt echoes and CLI boilerplate are suppressed, visible escapes such as `\n` are decoded, structured JSON answers are collapsed into readable result lines, tool output bodies are capped at three visible lines, terminal output uses TTY-aware bold/white labels, and raw stdout/stderr are still retained in run artifacts.
   - `--codex-final` / `--plugin-final` emits compact intermediate status and sanitized agent-output lines prefixed with `STRINGBEAN_INTERMEDIATE:` plus a final block wrapped in `STRINGBEAN_FINAL_START` / `STRINGBEAN_FINAL_END`.
   - `--plugin-full-output` / `--full-output` emits normal visible output and raw live agent stdout/stderr, then appends the same final sentinel block for Codex/Grok/Claude plugin wrappers. It exits 0 after printing the final block even when the Stringbean result says `FAILED`, so the host plugin can still read and report the failure.
+  - `--plugin-compact-output` / `--plugin-live-output` emits compact live progress and sanitized agent output plus the final sentinel block. It also exits 0 after reporting workflow failures, making it suitable for context-sensitive hosts such as Claude Code.
   - `--ignore-sandbox-warnings` is a diagnostic escape hatch: Stringbean records filesystem sandbox warnings but does not rollback/fail only because of those warnings. This can leave files modified.
   - `--quiet`
   - `--run-id`
@@ -213,7 +214,7 @@ $sbx fix typo in README --mode high
 
 If Codex displays the plugin-qualified skill name, choose `stringbean:sbx`.
 
-`--plugin-full-output` is intentionally verbose for agent-plugin use. Plugin runs emit an immediate command-accepted line and five-second heartbeats by default so Codex, Grok, and Claude do not mistake an active provider call for a stalled command. Use `--codex-final` when compact sanitized output is preferred, `--no-codex-progress` for fewer progress lines, or `--codex-progress-interval N` to choose a different heartbeat interval.
+`--plugin-full-output` is intentionally verbose for agent-plugin diagnostics. `--plugin-compact-output` keeps live sanitized assistant/tool/status lines and the final sentinel without replaying raw prompts. Plugin runs emit an immediate command-accepted line and five-second heartbeats by default so Codex, Grok, and Claude do not mistake an active provider call for a stalled command. Use `--no-codex-progress` for fewer progress lines or `--codex-progress-interval N` to choose a different heartbeat interval.
 
 Codex plugins are installed from this repo's local marketplace at `.agents/plugins/marketplace.json`.
 
@@ -238,7 +239,7 @@ If Grok displays plugin-qualified skill names, choose `grok-stringbean:sbx`.
 
 ### Claude Code plugin wrapper
 
-For use inside Claude Code, install the local Claude plugin. It provides a user-invoked `sbx` skill for `/sbx ...` that runs `sbx --plugin-full-output`, surfaces visible run output, and mirrors the final sentinel result into Claude's visible answer.
+For use inside Claude Code, install the local Claude plugin. It provides a user-invoked `sbx` skill for `/sbx ...` that runs `sbx --plugin-compact-output`, surfaces concise live assistant/tool output without replaying raw prompts, and mirrors the final sentinel result into Claude's visible answer.
 
 Install or refresh it with:
 
@@ -434,7 +435,7 @@ Preset D (fine-grained model mix):
 - Claude: Opus 4.8, Fable 5, Sonnet 5
 - Grok: build/review profiles using headless argv prompt transport (`grok ... -p "<prompt>"`)
 
-`--mode auto` enumerates the configured candidate agents/models for each role, infers high/medium/low from the task text, then selects the lowest-cost adequate candidate for that role. Dry runs include `available_models` and `selection_rationale` so you can see what was considered and why an agent was selected. Simple read/list/show tasks route to low reasoning candidates; complex refactors, migrations, security, architecture, and distributed-system tasks route to stronger high reasoning candidates. You can pin by role with `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, and `--reviewer-mode`.
+`--mode auto` enumerates the configured candidate agents/models for each role, infers high/medium/low from the task text, then selects the lowest-cost adequate candidate for that role. Dry runs include `available_models` and `selection_rationale` so you can see what was considered and why an agent was selected. Simple read/list/show tasks route to low reasoning candidates; complex refactors, migrations, security, architecture, and distributed-system tasks route to stronger high reasoning candidates. Explicit agent choices such as `--orchestrator claude-sonnet-5` take precedence over mode selection; use `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, and `--reviewer-mode` when you want automatic selection constrained by reasoning level instead.
 
 Create it with:
 

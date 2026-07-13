@@ -17,12 +17,28 @@ else
 fi
 
 ARGS=("$@")
+if [[ "$#" -eq 1 && "$1" == *" --"* ]]; then
+  PYTHON_BIN="$(command -v python3 || command -v python || true)"
+  if [[ -n "$PYTHON_BIN" ]]; then
+    SPLIT_ARGS=()
+    while IFS= read -r -d '' token; do
+      SPLIT_ARGS+=("$token")
+    done < <(
+      "$PYTHON_BIN" -c \
+        'import shlex, sys; [sys.stdout.write(part + "\0") for part in shlex.split(sys.argv[1])]' \
+        "$1" 2>/dev/null
+    )
+    if [[ "${#SPLIT_ARGS[@]}" -gt 0 ]]; then
+      ARGS=("${SPLIT_ARGS[@]}")
+    fi
+  fi
+fi
 HAS_OUTPUT_MODE=false
 HAS_PROGRESS_INTERVAL=false
 
-for arg in "$@"; do
+for arg in "${ARGS[@]}"; do
   case "$arg" in
-    --plugin-full-output|--full-output|--plugin-final|--codex-final)
+    --plugin-full-output|--full-output|--plugin-compact-output|--plugin-live-output|--plugin-final|--codex-final)
       HAS_OUTPUT_MODE=true
       ;;
     --codex-progress-interval|--codex-progress-interval=*)
@@ -32,7 +48,7 @@ for arg in "$@"; do
 done
 
 if [[ "$HAS_OUTPUT_MODE" == false ]]; then
-  ARGS+=(--plugin-full-output)
+  ARGS+=(--plugin-compact-output)
 fi
 if [[ "$HAS_PROGRESS_INTERVAL" == false ]]; then
   ARGS+=(--codex-progress-interval "${STRINGBEAN_PLUGIN_PROGRESS_INTERVAL:-5}")

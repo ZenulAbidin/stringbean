@@ -1844,6 +1844,7 @@ class WorkflowEngine:
         dry_run: bool = False,
         global_mode: str = "auto",
         role_modes: Optional[Dict[str, str]] = None,
+        agent_overrides: Optional[Dict[str, str]] = None,
     ) -> Dict[str, object]:
         if self.state.state.completed and self.state.state.status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
             return {"status": self.state.state.status.value, "message": "run already completed"}
@@ -1851,14 +1852,35 @@ class WorkflowEngine:
         max_rounds = self.config.workflow.max_review_rounds if max_review_rounds is None else max_review_rounds
         review_enabled = max_rounds > 0
         resolved_modes = self._resolve_modes(task, global_mode, role_modes)
-        orchestrator = self._agent_for_role("orchestrator", mode=resolved_modes["orchestrator"])
-        implementer = self._agent_for_role("implementer", mode=resolved_modes["implementer"])
-        reviewer = self._agent_for_role("reviewer", mode=resolved_modes["reviewer"]) if review_enabled else ""
+        overrides = agent_overrides or {}
+        orchestrator = self._agent_for_role(
+            "orchestrator",
+            mode=resolved_modes["orchestrator"],
+            override=overrides.get("orchestrator"),
+        )
+        implementer = self._agent_for_role(
+            "implementer",
+            mode=resolved_modes["implementer"],
+            override=overrides.get("implementer"),
+        )
+        reviewer = (
+            self._agent_for_role(
+                "reviewer",
+                mode=resolved_modes["reviewer"],
+                override=overrides.get("reviewer"),
+            )
+            if review_enabled
+            else ""
+        )
         advisor = (
             None
             if no_advisor
             else (
-                self._agent_for_role("advisor", mode=resolved_modes["advisor"])
+                self._agent_for_role(
+                    "advisor",
+                    mode=resolved_modes["advisor"],
+                    override=overrides.get("advisor"),
+                )
                 if self.config.workflow.advisors
                 else None
             )
@@ -1876,7 +1898,13 @@ class WorkflowEngine:
             if role != "reviewer" or review_enabled
         }
         selection_rationale = {
-            role: self._selection_rationale(role, agent_name, resolved_modes[role])
+            role: (
+                f"explicitly selected {agent_name} "
+                f"({self.config.agents[agent_name].model or self.config.agents[agent_name].adapter}, "
+                f"{self._agent_mode(agent_name) or 'default'})."
+                if overrides.get(role)
+                else self._selection_rationale(role, agent_name, resolved_modes[role])
+            )
             for role, agent_name in selected_agents.items()
             if agent_name
         }
@@ -1893,7 +1921,7 @@ class WorkflowEngine:
             f"Progress: Selected agents — {selected_preview}; modes: {mode_preview}; profile={self.execution_profile}."
         )
         self._progress(
-            "Progress: Auto-selection rationale — "
+            "Progress: Selection rationale — "
             + "; ".join(selection_rationale.values())
         )
 

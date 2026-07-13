@@ -194,6 +194,24 @@ def test_sbx_plugin_full_output_emits_normal_output_and_sentinel_block():
     assert "STRINGBEAN_FINAL_END" in result.stdout
 
 
+def test_sbx_plugin_compact_output_emits_sentinel_without_normal_dump():
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [str(repo / "scripts" / "sbx"), "enumerate", "bugs", "--dry-run", "--plugin-compact-output"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "STRINGBEAN_INTERMEDIATE: Command: sbx accepted" in result.stdout
+    assert "Run ID:" not in result.stdout
+    assert "Dry run mode - no agents were launched." not in result.stdout
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "Status: DRY_RUN" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
 def test_codex_plugin_sbx_wrapper_emits_sentinel_block():
     repo = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -242,8 +260,9 @@ def test_claude_plugin_sbx_wrapper_emits_sentinel_block():
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert "Run ID:" in result.stdout
-    assert "Dry run mode - no agents were launched." in result.stdout
+    assert "STRINGBEAN_INTERMEDIATE: Command: sbx accepted" in result.stdout
+    assert "Run ID:" not in result.stdout
+    assert "Dry run mode - no agents were launched." not in result.stdout
     assert "STRINGBEAN_FINAL_START" in result.stdout
     assert "STRINGBEAN_RESULT_START" in result.stdout
     assert "Status: DRY_RUN" in result.stdout
@@ -252,14 +271,16 @@ def test_claude_plugin_sbx_wrapper_emits_sentinel_block():
 
 
 @pytest.mark.parametrize(
-    "wrapper",
+    ("wrapper", "output_flag"),
     [
-        "plugins/stringbean/scripts/sbx-codex",
-        "plugins/grok-stringbean/scripts/sbx-grok",
-        "plugins/claude-stringbean/scripts/sbx-claude",
+        ("plugins/stringbean/scripts/sbx-codex", "--plugin-full-output"),
+        ("plugins/grok-stringbean/scripts/sbx-grok", "--plugin-full-output"),
+        ("plugins/claude-stringbean/scripts/sbx-claude", "--plugin-compact-output"),
     ],
 )
-def test_plugin_wrappers_add_full_output_and_five_second_heartbeat(tmp_path: Path, wrapper: str):
+def test_plugin_wrappers_add_output_mode_and_five_second_heartbeat(
+    tmp_path: Path, wrapper: str, output_flag: str
+):
     repo = Path(__file__).resolve().parents[1]
     fake_sbx = tmp_path / "fake-sbx"
     fake_sbx.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
@@ -277,9 +298,33 @@ def test_plugin_wrappers_add_full_output_and_five_second_heartbeat(tmp_path: Pat
     args = result.stdout.splitlines()
     assert result.returncode == 0, result.stderr
     assert args[:2] == ["inspect", "repo"]
-    assert "--plugin-full-output" in args
+    assert output_flag in args
     interval_index = args.index("--codex-progress-interval")
     assert args[interval_index + 1] == "5"
+
+
+def test_claude_wrapper_separates_flags_from_single_argument(tmp_path: Path):
+    repo = Path(__file__).resolve().parents[1]
+    fake_sbx = tmp_path / "fake-sbx"
+    fake_sbx.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
+    fake_sbx.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(repo / "plugins" / "claude-stringbean" / "scripts" / "sbx-claude"),
+            "plugin integration smoke --dry-run --mode low",
+        ],
+        cwd=repo,
+        env={**os.environ, "STRINGBEAN_SBX": str(fake_sbx)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    args = result.stdout.splitlines()
+    assert result.returncode == 0, result.stderr
+    assert args[:6] == ["plugin", "integration", "smoke", "--dry-run", "--mode", "low"]
+    assert "--plugin-compact-output" in args
 
 
 def test_preset_c_uses_real_grok_models_instead_of_cat(tmp_path: Path, monkeypatch):
@@ -295,6 +340,20 @@ def test_preset_c_uses_real_grok_models_instead_of_cat(tmp_path: Path, monkeypat
     assert all(agent.command and agent.command[0] == "grok" for agent in cfg.agents.values())
     assert not any(cli._is_placeholder_agent(agent) for agent in cfg.agents.values())
     assert "local-fallback" not in config_path.read_text(encoding="utf-8")
+
+
+def test_preset_d_uses_full_claude_model_ids():
+    cfg = cli._preset_config("D")
+
+    expected = {
+        "claude-opus-4-8": "claude-opus-4-8",
+        "claude-fable-5": "claude-fable-5",
+        "claude-sonnet-5": "claude-sonnet-5",
+    }
+    for name, model in expected.items():
+        agent = cfg.agents[name]
+        assert agent.model == model
+        assert agent.command == ["claude", "--model", model]
 
 
 def test_run_rejects_manually_configured_placeholder_before_launch(tmp_path: Path, monkeypatch):
@@ -337,6 +396,19 @@ def test_plugin_full_output_reports_config_failure_but_exits_zero(tmp_path: Path
     assert "Status: FAILED" in result.stdout
     assert "Configured placeholder agent(s) cannot perform a real run" in result.stdout
     assert "STRINGBEAN_RESULT_END" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
+def test_plugin_compact_output_reports_config_failure_but_exits_zero(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_placeholder_config(tmp_path)
+
+    result = runner.invoke(cli.app, ["run", "real task", "--plugin-compact-output"])
+
+    assert result.exit_code == 0
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "Status: FAILED" in result.stdout
+    assert "Configured placeholder agent(s) cannot perform a real run" in result.stdout
     assert "STRINGBEAN_FINAL_END" in result.stdout
 
 

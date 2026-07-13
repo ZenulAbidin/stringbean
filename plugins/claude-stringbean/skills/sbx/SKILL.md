@@ -1,8 +1,8 @@
 ---
 name: sbx
-description: Run Stringbean's sbx orchestrator from inside Claude Code; delegate local repository tasks to Stringbean; or run /sbx with full visible multi-agent orchestration output.
+description: Run Stringbean's sbx orchestrator from inside Claude Code; delegate local repository tasks to Stringbean; or run /sbx with compact live multi-agent orchestration output.
 argument-hint: <task> [--ro|--rw] [--mode auto|low|medium|high] [stringbean flags]
-allowed-tools: [Bash, Read, Glob, Grep]
+allowed-tools: [Bash, Read, Glob, Grep, TaskOutput]
 ---
 
 # Stringbean sbx
@@ -15,27 +15,34 @@ The user invoked this with: $ARGUMENTS
 
 ## Procedure
 
-1. Convert `$ARGUMENTS` into the exact task text and flags for Stringbean.
+1. Separate `$ARGUMENTS` into task text and Stringbean flags. Pass the task as one quoted shell
+   argument and pass every flag as its own shell argument. Never quote task text and flags together.
 2. Preserve user-specified Stringbean flags such as `--rw`, `--ro`, `--mode auto`,
    `--mode low`, `--mode medium`, and `--mode high`.
 3. Run the plugin wrapper when this repository checkout is available:
 
 ```bash
-plugins/claude-stringbean/scripts/sbx-claude "$ARGUMENTS"
+plugins/claude-stringbean/scripts/sbx-claude "<task text>" <flags>
 ```
 
 If the current working directory is not the Stringbean source checkout, run the installed command:
 
 ```bash
-sbx "$ARGUMENTS" --plugin-full-output
+sbx "<task text>" <flags> --plugin-compact-output
 ```
 
 4. Show useful live Stringbean output while the command runs. Lines beginning with
    `STRINGBEAN_INTERMEDIATE:` are live progress only, not final output.
-   Set the Bash timeout to at least 1,800 seconds when available. If the command is yielded
-   as a running process, poll it every 5-10 seconds and do not terminate it while fresh
-   five-second heartbeat or agent-output lines continue to arrive.
+   Run commands in the foreground (`run_in_background: false`). Use 120 seconds for `--dry-run`;
+   for real workflows request at least 1,800 seconds and preferably 3,600 seconds when the Bash
+   tool accepts it. Never start a background run merely to make the tool call return sooner.
+   If the host backgrounds a long command or returns a task ID, use blocking `TaskOutput` calls
+   until that task completes. Repeat bounded waits as needed while fresh five-second heartbeat
+   or agent-output lines continue to arrive. Do not use `Monitor`, do not tell the user to wait,
+   and do not end the turn before the command completes or fails.
    Each provider subprocess launch is marked with `STRINGBEAN_INTERMEDIATE: Command:`.
+   Claude subprocess events are reconstructed live as concise `assistant:`, `Tool Call:`, and
+   `Executed:` lines; do not wait for the subprocess to exit before showing those lines.
 5. After completion, read the final result between:
 
 ```text
@@ -55,6 +62,9 @@ STRINGBEAN_RESULT_END
 
 ## Output rules
 
+- Keep the compact plugin mode unless the user explicitly requests raw `--plugin-full-output` diagnostics.
+- Do not return a provisional "still running" final answer. A final answer requires
+  `STRINGBEAN_FINAL_END` or a confirmed process failure.
 - Do not paste raw provider logs, prompts, JSON transcripts, or hidden reasoning.
 - Prefer the final result block over raw logs. Do not tell the user to inspect a hidden transcript for the answer.
 - If Stringbean fails, report the concise failure reason and any artifact path that was printed.

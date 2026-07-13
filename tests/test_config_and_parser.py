@@ -210,6 +210,196 @@ def test_grok_adapter_respects_explicit_non_streaming_output_format(tmp_path: Pa
     assert not adapter.uses_structured_stream(command)
 
 
+def test_claude_adapter_uses_noninteractive_stream_json(tmp_path: Path):
+    from agent_relay.adapters import ClaudeAdapter
+
+    cfg = AgentConfig(
+        name="claude-sonnet",
+        adapter="claude",
+        role="advisor",
+        permissions="read_only",
+        command=["claude", "--model", "sonnet"],
+        prompt_transport="stdin",
+    )
+    adapter = ClaudeAdapter(cfg)
+    command = adapter.build_command("prompt", tmp_path)
+
+    assert command == [
+        "claude",
+        "--model",
+        "sonnet",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+    assert adapter.uses_structured_stream(command)
+    assert adapter.supports_prompt_transport("stdin")
+    assert adapter.supports_prompt_transport("argv")
+    assert not adapter.supports_prompt_transport("file")
+
+
+def test_claude_adapter_uses_configured_model_when_command_is_implicit(tmp_path: Path):
+    from agent_relay.adapters import ClaudeAdapter
+
+    cfg = AgentConfig(
+        name="claude-fable",
+        adapter="claude",
+        model="claude-fable-5",
+        role="advisor",
+        permissions="read_only",
+        command=None,
+        prompt_transport="stdin",
+    )
+    adapter = ClaudeAdapter(cfg)
+
+    assert adapter.build_command("prompt", tmp_path) == [
+        "claude",
+        "--model",
+        "claude-fable-5",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+
+
+def test_claude_adapter_normalizes_final_stream_result_for_parser(tmp_path: Path):
+    from agent_relay.adapters import ClaudeAdapter
+
+    cfg = AgentConfig(
+        name="claude-sonnet",
+        adapter="claude",
+        role="orchestrator",
+        permissions="read_only",
+        command=["claude", "--model", "sonnet"],
+    )
+    adapter = ClaudeAdapter(cfg)
+    result = '{"summary":"claude streamed","assumptions":[],"tasks":[],"risks":[],"advisor_questions":[]}'
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init", "session_id": "session-1"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "session_id": "session-1",
+                    "message": {
+                        "content": [
+                            {"type": "thinking", "thinking": "private scratch"},
+                            {"type": "text", "text": result},
+                        ]
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "session_id": "session-1", "result": result}),
+        ]
+    )
+
+    normalized = adapter.normalize_stdout(stdout)
+    parsed, _, error = parse_structured_output(normalized, OrchestratorPlan)
+
+    assert error is None
+    assert parsed is not None
+    assert parsed.summary == "claude streamed"
+    assert "private scratch" not in normalized
+
+
+def test_claude_adapter_respects_explicit_json_output(tmp_path: Path):
+    from agent_relay.adapters import ClaudeAdapter
+
+    cfg = AgentConfig(
+        name="claude-sonnet",
+        adapter="claude",
+        role="reviewer",
+        permissions="read_only",
+        command=["claude", "--output-format=json"],
+    )
+    adapter = ClaudeAdapter(cfg)
+    command = adapter.build_command("prompt", tmp_path)
+
+    assert command == ["claude", "--output-format=json", "--print"]
+    assert not adapter.uses_structured_stream(command)
+
+
+def test_claude_stream_pipeline_formats_tools_and_parses_result(tmp_path: Path):
+    from agent_relay.adapters import ClaudeAdapter
+    from agent_relay.streaming import LiveStreamFormatter
+
+    fake_claude = tmp_path / "fake_claude.py"
+    fake_claude.write_text(
+        """\
+import json
+import sys
+
+assert sys.stdin.read() == "inspect repository"
+session = "session-1"
+result = {
+    "summary": "pipeline complete",
+    "assumptions": [],
+    "tasks": [],
+    "risks": [],
+    "advisor_questions": [],
+}
+events = [
+    {"type": "system", "subtype": "init", "session_id": session},
+    {
+        "type": "assistant",
+        "session_id": session,
+        "message": {"content": [
+            {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {"command": "pwd"}}
+        ]},
+    },
+    {
+        "type": "user",
+        "session_id": session,
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tool-1", "content": "/tmp/repository"}
+        ]},
+    },
+    {"type": "result", "session_id": session, "result": json.dumps(result)},
+]
+for event in events:
+    print(json.dumps(event), flush=True)
+""",
+        encoding="utf-8",
+    )
+    cfg = AgentConfig(
+        name="fake-claude",
+        adapter="claude",
+        role="orchestrator",
+        permissions="read_only",
+        command=[sys.executable, "-u", str(fake_claude)],
+        prompt_transport="stdin",
+    )
+    adapter = ClaudeAdapter(cfg)
+    command = adapter.build_command("inspect repository", tmp_path)
+    visible: list[str] = []
+    formatter = LiveStreamFormatter(visible.append)
+
+    output = asyncio.run(
+        run_subprocess(
+            RunnerConfig(
+                command=command,
+                working_directory=tmp_path,
+                prompt="inspect repository",
+                on_stdout_line=formatter.feed,
+            )
+        )
+    )
+    formatter.flush()
+    parsed, _, error = parse_structured_output(
+        adapter.normalize_stdout(output.raw_stdout), OrchestratorPlan
+    )
+
+    assert output.exit_code == 0
+    assert "Tool Call: Bash — pwd" in visible
+    assert "Executed: Bash completed — /tmp/repository" in visible
+    assert "Plan: pipeline complete" in visible
+    assert error is None
+    assert parsed is not None
+    assert parsed.summary == "pipeline complete"
+
+
 def test_parser_designated_block_and_fallback(tmp_path: Path):
     text = """
 noise

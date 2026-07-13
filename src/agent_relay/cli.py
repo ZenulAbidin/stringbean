@@ -157,7 +157,7 @@ def _default_config() -> Config:
             "fable": AgentConfig(
                 name="fable",
                 adapter="claude",
-                model="fable-5",
+                model="claude-fable-5",
                 role="advisor",
                 permissions="read_only",
                 command=None,
@@ -205,7 +205,7 @@ def _preset_config(preset: str) -> Config:
                 "sol": AgentConfig(
                     name="sol",
                     adapter="claude",
-                    model="fable-5",
+                    model="claude-fable-5",
                     role="orchestrator",
                     permissions="read_write",
                     command=None,
@@ -399,30 +399,30 @@ def _preset_config(preset: str) -> Config:
                 "claude-opus-4-8": AgentConfig(
                     name="claude-opus-4-8",
                     adapter="claude",
-                    model="opus-4.8",
+                    model="claude-opus-4-8",
                     role="reviewer",
                     permissions="read_only",
-                    command=["claude", "--model", "opus-4.8"],
+                    command=["claude", "--model", "claude-opus-4-8"],
                     mode="high",
                     prompt_transport="stdin",
                 ),
                 "claude-fable-5": AgentConfig(
                     name="claude-fable-5",
                     adapter="claude",
-                    model="fable-5",
+                    model="claude-fable-5",
                     role="advisor",
                     permissions="read_only",
-                    command=["claude", "--model", "fable-5"],
+                    command=["claude", "--model", "claude-fable-5"],
                     mode="medium",
                     prompt_transport="stdin",
                 ),
                 "claude-sonnet-5": AgentConfig(
                     name="claude-sonnet-5",
                     adapter="claude",
-                    model="sonnet-5",
+                    model="claude-sonnet-5",
                     role="reviewer",
                     permissions="read_only",
-                    command=["claude", "--model", "sonnet-5"],
+                    command=["claude", "--model", "claude-sonnet-5"],
                     mode="low",
                     prompt_transport="stdin",
                 ),
@@ -703,6 +703,7 @@ def _run_engine(
     max_review_rounds: Optional[int],
     mode: str,
     role_modes: Optional[dict[str, str]],
+    agent_overrides: Optional[dict[str, str]],
     execution_profile: str,
     codex_progress: bool = False,
     progress_interval_seconds: float = 30.0,
@@ -734,6 +735,7 @@ def _run_engine(
             dry_run=dry_run,
             global_mode=mode,
             role_modes=role_modes,
+            agent_overrides=agent_overrides,
         )
     )
     return {"run_id": run_dir.run_id, "summary": summary}
@@ -967,6 +969,15 @@ def run(
         "--full-output",
         help="Emit full normal output and raw live agent stdout/stderr, then append the sentinel final block for agent plugins.",
     ),
+    plugin_compact_output: bool = typer.Option(
+        False,
+        "--plugin-compact-output",
+        "--plugin-live-output",
+        help=(
+            "Emit compact live progress and sanitized agent output plus the sentinel final block, "
+            "and exit successfully after reporting workflow failures to the host plugin."
+        ),
+    ),
     ignore_sandbox_warnings: bool = typer.Option(
         False,
         "--ignore-sandbox-warnings",
@@ -993,8 +1004,9 @@ def run(
     """
     Execute a full workflow run.
     """
-    final_block_output = codex_final or plugin_full_output
-    compact_final_output = codex_final and not plugin_full_output
+    final_block_output = codex_final or plugin_full_output or plugin_compact_output
+    compact_final_output = (codex_final or plugin_compact_output) and not plugin_full_output
+    plugin_success_exit = plugin_full_output or plugin_compact_output
     if final_block_output:
         print(
             "STRINGBEAN_INTERMEDIATE: Command: sbx accepted the request and is preparing the workflow.",
@@ -1058,7 +1070,7 @@ def run(
             )
         else:
             console.print(f"Configuration error: {exc}")
-        raise typer.Exit(code=0 if plugin_full_output else 1) from exc
+        raise typer.Exit(code=0 if plugin_success_exit else 1) from exc
     engine_quiet = quiet or compact_final_output
     suppress_agent_stream = no_agent_stream or compact_final_output
     if plugin_full_output and not no_agent_stream:
@@ -1077,6 +1089,17 @@ def run(
             max_review_rounds=max_review_rounds,
             mode=mode,
             role_modes=role_modes or None,
+            agent_overrides={
+                role: name
+                for role, name in (
+                    ("orchestrator", orchestrator),
+                    ("advisor", advisor),
+                    ("implementer", implementer),
+                    ("reviewer", reviewer),
+                )
+                if name
+            }
+            or None,
             execution_profile=resolved_execution_profile,
             codex_progress=effective_codex_progress,
             progress_interval_seconds=codex_progress_interval,
@@ -1097,14 +1120,14 @@ def run(
             )
         else:
             _print_run_failure(selected_run_id, task, exc)
-        raise typer.Exit(code=0 if plugin_full_output else 1) from exc
+        raise typer.Exit(code=0 if plugin_success_exit else 1) from exc
     if not compact_final_output:
         _print_labeled("Run ID", str(out["run_id"]))
     if plugin_full_output:
         _print_run_summary(out["summary"], dry_run=dry_run, codex_final=False)
         _print_codex_final_summary(out["summary"], dry_run=dry_run)
     else:
-        _print_run_summary(out["summary"], dry_run=dry_run, codex_final=codex_final)
+        _print_run_summary(out["summary"], dry_run=dry_run, codex_final=compact_final_output)
 
 
 @app.command()

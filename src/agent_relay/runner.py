@@ -60,8 +60,20 @@ def _to_str_lines(buffer: bytes) -> str:
 def _pump_stream(stream: Optional[object], cb: Optional[Callable[[str], None]], out: list[str]) -> None:
     if stream is None:
         return
+    read_available = getattr(stream, "read1", None)
     while True:
-        chunk = stream.read(4096)
+        # BufferedReader.read(size) can wait for the entire requested size. A
+        # provider may emit a short event and then work silently for minutes,
+        # so use read1() to forward currently available pipe bytes immediately.
+        try:
+            if callable(read_available):
+                chunk = read_available(4096)
+            else:
+                chunk = stream.read(4096)
+        except (OSError, ValueError):
+            # Process finalization can close the pipe after the bounded thread
+            # join but before this reader observes EOF.
+            break
         if not chunk:
             break
         text = _to_str_lines(chunk)

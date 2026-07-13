@@ -6,6 +6,10 @@
 
 - Preset C now generates real Grok Build agents at low, medium, and high reasoning levels instead of unusable `cat` placeholder agents.
 - Agent-plugin runs now emit every provider-process launch plus five-second keepalives, and Grok calls stream safely without exposing hidden thought events.
+- Claude calls now use noninteractive stream JSON with immediate pipe forwarding, compact tool/result formatting, and valid full model IDs.
+- Claude Code's plugin now defaults to compact live output so raw prompts do not overwhelm its tool result, while preserving a zero-exit sentinel on workflow failure.
+- Claude Code's skill now separates task text from flags and waits on background task output instead of ending its turn before the final sentinel.
+- Explicit per-role agent choices now take precedence over automatic mode selection.
 
 ## [0.1.0] - 2026-07-13
 
