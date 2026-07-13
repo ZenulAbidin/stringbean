@@ -76,6 +76,9 @@ class LiveStreamFormatter:
         if streaming_event is not None:
             event_type = str(streaming_event.get("type") or "").strip().lower()
             if event_type == "text" and isinstance(streaming_event.get("data"), str):
+                # Some providers stream the final JSON contract as token chunks;
+                # buffer it so the live log shows one parsed summary instead of
+                # leaking partial transport records.
                 self._streaming_text_chunks.append(streaming_event["data"])
                 return []
             if event_type == "thought":
@@ -448,6 +451,7 @@ def _format_json_value(value: Any) -> Iterable[str]:
 
 
 def _format_structured_payload(payload: dict[str, Any]) -> list[str] | None:
+    """Collapse known agent JSON contracts into bounded live-log summaries."""
     if "type" in payload or "event" in payload:
         return None
 
@@ -469,15 +473,16 @@ def _format_structured_payload(payload: dict[str, Any]) -> list[str] | None:
         if summary:
             head = f"{head} — {summary}"
         lines = [head]
-        for key, label in (
-            ("files_changed", "files"),
-            ("tests", "tests"),
-            ("remaining_issues", "remaining"),
-            ("handoff_notes", "notes"),
-        ):
-            values = payload.get(key)
-            if isinstance(values, list) and values:
-                lines.append(f"  {label}: {_join_preview(values)}")
+        _append_preview_lines(
+            lines,
+            payload,
+            (
+                ("files_changed", "files"),
+                ("tests", "tests"),
+                ("remaining_issues", "remaining"),
+                ("handoff_notes", "notes"),
+            ),
+        )
         return lines
 
     if "verdict" in payload:
@@ -486,18 +491,31 @@ def _format_structured_payload(payload: dict[str, Any]) -> list[str] | None:
         if summary:
             head = f"{head} — {summary}"
         lines = [head]
-        required = payload.get("required_fixes")
-        if isinstance(required, list) and required:
-            lines.append(f"  required: {_join_preview(required)}")
-        blocking = payload.get("blocking_issues")
-        if isinstance(blocking, list) and blocking:
-            lines.append(f"  blocking: {_join_preview(blocking)}")
+        _append_preview_lines(
+            lines,
+            payload,
+            (
+                ("required_fixes", "required"),
+                ("blocking_issues", "blocking"),
+            ),
+        )
         return lines
 
     if summary:
         return [f"Response: {summary}"]
 
     return None
+
+
+def _append_preview_lines(
+    lines: list[str],
+    payload: dict[str, Any],
+    keys: Iterable[tuple[str, str]],
+) -> None:
+    for key, label in keys:
+        values = payload.get(key)
+        if isinstance(values, list) and values:
+            lines.append(f"  {label}: {_join_preview(values)}")
 
 
 def _join_preview(values: list[Any], limit: int = 4) -> str:

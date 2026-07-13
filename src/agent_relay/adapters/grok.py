@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import List
 
-from .base import CommandAdapterMixin
+from .base import CommandAdapterMixin, option_value
 
 
 class GrokAdapter(CommandAdapterMixin):
@@ -13,7 +13,7 @@ class GrokAdapter(CommandAdapterMixin):
 
     def build_command(self, prompt: str, repo_root: Path) -> List[str]:
         command = super().build_command(prompt, repo_root)
-        if self._output_format(command) is None:
+        if option_value(command, "--output-format") is None:
             command = command + ["--output-format", "streaming-json"]
         if self.agent.prompt_transport == "argv":
             if "-p" not in command and "--single" not in command:
@@ -54,13 +54,4 @@ class GrokAdapter(CommandAdapterMixin):
         return stdout
 
     def uses_structured_stream(self, command: List[str]) -> bool:
-        return self._output_format(command) == "streaming-json"
-
-    @staticmethod
-    def _output_format(command: List[str]) -> str | None:
-        for index, part in enumerate(command):
-            if part == "--output-format" and index + 1 < len(command):
-                return command[index + 1]
-            if part.startswith("--output-format="):
-                return part.split("=", 1)[1]
-        return None
+        return option_value(command, "--output-format") == "streaming-json"

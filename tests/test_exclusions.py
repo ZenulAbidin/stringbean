@@ -65,6 +65,21 @@ def test_non_git_context_is_first_class_and_does_not_read_excluded_guidance(tmp_
     assert read_text_if_present(tmp_path / "README.md", exclusions) == ""
 
 
+def test_configured_excluded_directory_is_filtered_from_context(tmp_path: Path):
+    (tmp_path / "visible.txt").write_text("visible\n", encoding="utf-8")
+    private_dir = tmp_path / "private-notes"
+    private_dir.mkdir()
+    (private_dir / "plan.txt").write_text("do not collect this guidance\n", encoding="utf-8")
+    exclusions = RepositoryExclusions.discover(tmp_path, configured_patterns=("private-notes/**",))
+
+    context = collect_repo_context(tmp_path, exclusions)
+
+    assert exclusions.is_excluded("private-notes/plan.txt")
+    assert context["top_level_files"] == ["visible.txt"]
+    assert "do not collect this guidance" not in str(context)
+    assert read_text_if_present(private_dir / "plan.txt", exclusions) == ""
+
+
 def test_git_context_reports_only_a_dirty_count_not_dirty_paths(tmp_path: Path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     source = tmp_path / "src"

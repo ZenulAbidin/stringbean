@@ -7,6 +7,8 @@ filesystem audit trail, and runs a small resumable workflow.
 It is not a provider UI and does not handle API keys. It is intentionally minimal: a local subprocess
 supervisor with inspectable artifacts.
 
+Current release: `0.2.0`.
+
 ## What this project does
 
 - Runs an MCP-style workflow (planning → review → implementation → review) across configured agent roles
@@ -281,6 +283,7 @@ Then restart Codex or open a new task and run:
 
 - Keep release notes current in [`CHANGELOG.md`](CHANGELOG.md).
 - Read the step-by-step release checklist in [`RELEASE.md`](RELEASE.md).
+- Hosting and publication expectations are documented in [`docs/hosting.md`](docs/hosting.md).
 - Before announcing publicly, verify:
   - `python -m pytest -q` passes
   - `python -m build` and `python -m twine check dist/*` pass
@@ -336,6 +339,14 @@ agents:
       - high
     prompt_transport: argv
 
+  sol-review:
+    adapter: codex
+    model: gpt-5.6-sol
+    role: reviewer
+    permissions: read_only
+    command: null
+    prompt_transport: stdin
+
 workflow:
   orchestrator: sol
   advisors:
@@ -343,7 +354,7 @@ workflow:
   implementers:
     - grok
   reviewers:
-    - sol
+    - sol-review
   advisor_policy: before_implementation
   max_review_rounds: 2
   max_total_agent_calls: 20
@@ -409,7 +420,7 @@ requires every provider to skip an excluded path without retrying or delegating 
 nested repository intentionally, run `sbx` from that repository's own root or explicitly set
 `exclude_nested_repositories: false`.
 
-Reserved config fields are accepted for forward compatibility but are not implemented yet. Non-default values emit `UnsupportedConfigWarning` so they are not silently ignored:
+Reserved config fields are accepted for forward compatibility but are not implemented yet. Non-default values emit `UnsupportedConfigWarning` so they are not silently ignored. They are documented here only to explain warnings from existing configs; new configs should leave them unset:
 
 - `workflow.testers`
 - `workflow.researcher`
@@ -507,6 +518,8 @@ Each run gets `.stringbean/runs/<run-id>/` with:
   - run `stringbean init --force` to recreate defaults
 - Dry-run is safe; it does not invoke agents.
 - If a provider CLI changes its CLI flags, keep that agent `command` overridden in config rather than editing code.
+- If `sbx` starts an older install, run `scripts/install-local-shims.sh` or call `./scripts/sbx` from this checkout.
+- If a hosted README example fails, verify the target machine has Python 3.10+ and the relevant provider CLI installed and authenticated.
 
 ## Add a new adapter
 
@@ -515,7 +528,7 @@ Each run gets `.stringbean/runs/<run-id>/` with:
 3. Add it to `adapters/__init__.py` and `workflow.py` adapter map
 4. Add/adjust templates as needed
 
-## Current MVP limitations
+## Current limitations
 
 - No concurrent read-only execution scheduler yet (writes are always serialized)
 - No built-in cloud backend, no DB, no broker

@@ -210,6 +210,26 @@ def test_grok_adapter_respects_explicit_non_streaming_output_format(tmp_path: Pa
     assert not adapter.uses_structured_stream(command)
 
 
+def test_grok_adapter_preserves_explicit_streaming_flags(tmp_path: Path):
+    from agent_relay.adapters import GrokAdapter
+
+    cfg = AgentConfig(
+        name="grok-build",
+        adapter="grok",
+        role="implementer",
+        permissions="read_write",
+        command=["grok", "--output-format=streaming-json", "--single"],
+        prompt_transport="argv",
+    )
+    adapter = GrokAdapter(cfg)
+    command = adapter.build_command("prompt", tmp_path)
+
+    assert command == ["grok", "--output-format=streaming-json", "--single"]
+    assert command.count("--output-format=streaming-json") == 1
+    assert "-p" not in command
+    assert adapter.uses_structured_stream(command)
+
+
 def test_claude_adapter_uses_noninteractive_stream_json(tmp_path: Path):
     from agent_relay.adapters import ClaudeAdapter
 

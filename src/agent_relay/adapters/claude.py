@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import List
 
-from .base import CommandAdapterMixin
+from .base import CommandAdapterMixin, option_value
 
 
 class ClaudeAdapter(CommandAdapterMixin):
@@ -18,7 +18,7 @@ class ClaudeAdapter(CommandAdapterMixin):
         if "-p" not in command and "--print" not in command:
             command = command + ["--print"]
 
-        output_format = self._output_format(command)
+        output_format = option_value(command, "--output-format")
         if output_format is None:
             command = command + ["--output-format", "stream-json"]
             output_format = "stream-json"
@@ -60,7 +60,7 @@ class ClaudeAdapter(CommandAdapterMixin):
         return stdout
 
     def uses_structured_stream(self, command: List[str]) -> bool:
-        return self._output_format(command) == "stream-json"
+        return option_value(command, "--output-format") == "stream-json"
 
     @staticmethod
     def _assistant_text(event: dict[str, object]) -> list[str]:
@@ -80,19 +80,5 @@ class ClaudeAdapter(CommandAdapterMixin):
         return text
 
     @staticmethod
-    def _output_format(command: List[str]) -> str | None:
-        for index, part in enumerate(command):
-            if part == "--output-format" and index + 1 < len(command):
-                return command[index + 1]
-            if part.startswith("--output-format="):
-                return part.split("=", 1)[1]
-        return None
-
-    @staticmethod
     def _model(command: List[str]) -> str | None:
-        for index, part in enumerate(command):
-            if part == "--model" and index + 1 < len(command):
-                return command[index + 1]
-            if part.startswith("--model="):
-                return part.split("=", 1)[1]
-        return None
+        return option_value(command, "--model")

@@ -55,6 +55,11 @@ POLICY_ENV_PREFIX = "STRINGBEAN_POLICY_"
 
 
 def _is_policy_bin_entry(path_entry: str) -> bool:
+    """Identify only Stringbean-owned policy-bin directories.
+
+    The sentinel is authoritative for current runs. The wrapper-text fallback
+    lets us clean PATH values left by older runs that predate the sentinel.
+    """
     if not path_entry:
         return False
     path = Path(path_entry)
@@ -151,6 +156,7 @@ def _command_basenames(command: str, env: Mapping[str, str]) -> set[str]:
 
 
 def _git_subcommand(argv: Sequence[str]) -> str | None:
+    """Return the first real git subcommand after global git options."""
     idx = 1
     while idx < len(argv):
         arg = str(argv[idx])
@@ -190,6 +196,7 @@ def _git_subcommand(argv: Sequence[str]) -> str | None:
 
 
 def command_policy_denial(command: Sequence[str], env: Mapping[str, str] | None = None) -> str | None:
+    """Return the policy error for a denied command without executing it."""
     if not command:
         return None
     policy_env = os.environ if env is None else env
@@ -243,6 +250,9 @@ def apply_codex_execution_profile(command: Sequence[str], profile: str) -> list[
         out.append(str(part))
 
     if len(out) >= 2 and Path(out[0]).name == "codex" and "exec" in out[1:]:
+        # Agent configs may carry their own sandbox flags. Strip them above and
+        # insert the run profile immediately before `exec` so nested Codex calls
+        # cannot silently widen or narrow Stringbean's selected policy.
         exec_index = out.index("exec", 1)
         exec_args = out[exec_index + 1 :]
         if "--skip-git-repo-check" not in exec_args:
@@ -267,6 +277,7 @@ def policy_prompt(
     workspace_root: Path | None = None,
     excluded_paths: Sequence[str] = (),
 ) -> str:
+    """Render the policy contract injected into every provider prompt."""
     profile = normalize_execution_profile(profile)
     denied = ", ".join(DENIED_COMMANDS)
     denied_git = ", ".join(f"git {name}" for name in DENIED_GIT_SUBCOMMANDS)
@@ -970,6 +981,7 @@ int posix_spawnp(
 
 
 def _compile_policy_preload(bin_dir: Path) -> Path | None:
+    """Build the optional LD_PRELOAD guard used to block excluded path opens."""
     compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
     if not compiler:
         return None

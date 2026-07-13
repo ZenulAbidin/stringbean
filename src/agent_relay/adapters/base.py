@@ -5,7 +5,7 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 from ..config import AgentConfig
 
@@ -51,10 +51,9 @@ class Adapter(ABC):
 
 class CommandAdapterMixin(Adapter, ABC):
     default_executable: Optional[str] = None
-    probe_suffixes = ["--help", "-h", "--version"]
 
     async def detect(self, repo_root: Path) -> AdapterCapabilities:
-        command = self.agent.command or [self.default_executable] if self.default_executable else self.agent.command
+        command = self._base_command()
         if not command:
             return AdapterCapabilities(executable="", available=False, error="No command configured")
 
@@ -80,9 +79,8 @@ class CommandAdapterMixin(Adapter, ABC):
                     )
             except FileNotFoundError:
                 return AdapterCapabilities(executable=executable, available=False, error="Executable not in PATH")
-            except Exception as exc:
-                err = str(exc)
-                # keep searching; some commands exit non-zero and still valid
+            except Exception:
+                # Keep probing; CLIs vary in which help/version flags they accept.
                 continue
 
         return AdapterCapabilities(
@@ -96,10 +94,28 @@ class CommandAdapterMixin(Adapter, ABC):
         return [[executable, "--help"], [executable, "-h"], [executable, "--version"]]
 
     def build_command(self, prompt: str, repo_root: Path) -> List[str]:
-        base = self.agent.command or [self.default_executable]
-        if base is None:
+        command = self._base_command()
+        if command is None:
             raise ValueError("no executable")
-        return base
+        return list(command)
 
     def supports_prompt_transport(self, transport: str) -> bool:
         return transport in {"stdin", "argv", "file"}
+
+    def _base_command(self) -> List[str] | None:
+        if self.agent.command:
+            return list(self.agent.command)
+        if self.default_executable:
+            return [self.default_executable]
+        return None
+
+
+def option_value(command: List[str], option: str) -> str | None:
+    """Return a CLI option value from either `--name value` or `--name=value`."""
+    prefix = f"{option}="
+    for index, part in enumerate(command):
+        if part == option and index + 1 < len(command):
+            return command[index + 1]
+        if part.startswith(prefix):
+            return part.split("=", 1)[1]
+    return None

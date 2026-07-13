@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import tempfile
@@ -49,7 +48,7 @@ from .runner import (
     WatchdogTermination,
     run_subprocess,
 )
-from .state import CallStore, RunDirectory, RunEventStore, RunState, now_iso
+from .state import CallStore, RunDirectory, RunEventStore, RunState
 from .streaming import LiveStreamFormatter
 from .templates import render_template
 from .utils import (
@@ -303,6 +302,8 @@ class WorkflowEngine:
         line = self._shorten_text(line, limit=420)
         if not line or line == "stream output start" or self._is_reasoning_stream_line(line):
             return
+        # Plugin hosts consume these sentinel-prefixed progress lines while the
+        # subprocess is still running. Keep them concise and redacted.
         if self._agent_stream_open_line:
             print("", flush=True)
             self._agent_stream_open_line = False
@@ -573,6 +574,8 @@ class WorkflowEngine:
         exclude_nested = bool(self.config.repository.exclude_nested_repositories)
         cache_key = (root, configured, exclude_nested)
         if self._exclusions_cache_key != cache_key or self._exclusions_cache is None:
+            # Discovery returns concrete protected paths for enforcement, while
+            # prompt text receives only ordered patterns and nested repo labels.
             self._exclusions_cache = RepositoryExclusions.discover(
                 root,
                 configured,
@@ -614,29 +617,41 @@ class WorkflowEngine:
 
     @staticmethod
     def _repo_status_entries(status_output: bytes | str) -> Dict[str, str]:
-        entries: Dict[str, str] = {}
+        """Parse git porcelain status into path -> status entries.
+
+        Git prints renames differently in human-readable and NUL-delimited
+        formats, so both branches normalize them to one internal key shape.
+        """
         if isinstance(status_output, bytes):
             status_text = status_output.decode("utf-8", errors="surrogateescape")
         else:
             status_text = status_output
         if "\0" not in status_text:
-            for line in status_text.splitlines():
-                if len(line) < 4 or not line.strip():
-                    continue
-                status = line[:2]
-                path_text = line[3:]
-                if "R" in status[:2] or "C" in status[:2]:
-                    rename_paths = WorkflowEngine._split_porcelain_rename_path(path_text)
-                    if rename_paths:
-                        old_path, new_path = rename_paths
-                        entries[f"{old_path}{_STATUS_RENAME_SEPARATOR}{new_path}"] = status
-                        continue
-                path = WorkflowEngine._decode_porcelain_path(path_text)
-                if path:
-                    entries[path] = status
-            return entries
+            return WorkflowEngine._repo_status_entries_from_lines(status_text.splitlines())
+        return WorkflowEngine._repo_status_entries_from_z_records(status_text.split("\0"))
 
-        records = status_text.split("\0")
+    @staticmethod
+    def _repo_status_entries_from_lines(records: Iterable[str]) -> Dict[str, str]:
+        entries: Dict[str, str] = {}
+        for record in records:
+            if len(record) < 4 or not record.strip():
+                continue
+            status = record[:2]
+            path_text = record[3:]
+            if "R" in status or "C" in status:
+                rename_paths = WorkflowEngine._split_porcelain_rename_path(path_text)
+                if rename_paths:
+                    old_path, new_path = rename_paths
+                    entries[f"{old_path}{_STATUS_RENAME_SEPARATOR}{new_path}"] = status
+                    continue
+            path = WorkflowEngine._decode_porcelain_path(path_text)
+            if path:
+                entries[path] = status
+        return entries
+
+    @staticmethod
+    def _repo_status_entries_from_z_records(records: List[str]) -> Dict[str, str]:
+        entries: Dict[str, str] = {}
         idx = 0
         while idx < len(records):
             record = records[idx]
@@ -645,15 +660,16 @@ class WorkflowEngine:
                 continue
             status = record[:2]
             path = record[3:]
-            if path:
-                if "R" in status[:2] or "C" in status[:2]:
-                    if idx >= len(records):
-                        continue
-                    old_path = records[idx]
-                    idx += 1
-                    entries[f"{old_path}{_STATUS_RENAME_SEPARATOR}{path}"] = status
-                else:
-                    entries[path] = status
+            if not path:
+                continue
+            if "R" in status or "C" in status:
+                if idx >= len(records):
+                    continue
+                old_path = records[idx]
+                idx += 1
+                entries[f"{old_path}{_STATUS_RENAME_SEPARATOR}{path}"] = status
+            else:
+                entries[path] = status
         return entries
 
     @staticmethod
@@ -723,6 +739,7 @@ class WorkflowEngine:
         return None
 
     def _repo_status_snapshot(self) -> Dict[str, str]:
+        """Return the current repository diff snapshot excluding protected paths."""
         try:
             proc = subprocess.run(
                 [git_command(), "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],

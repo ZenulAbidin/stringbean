@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stringbean"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local multi-agent coding orchestrator with provider-agnostic subprocess CLIs"
 readme = "README.md"
 license = "MIT"

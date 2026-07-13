@@ -2,8 +2,17 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-13
+
+### Changed
+
+- Assigned the public hostable release version and propagated it through package metadata, runtime version output, tests, and release documentation.
+- Improved readability in adapter command construction, run persistence helpers, workflow status parsing, and structured output formatting without changing public artifact schemas.
+- Synchronized package metadata and runtime version for the next hostable release.
+
 ### Fixed
 
+- Release checklist again includes shipped plugin manifests, and release metadata now stays synchronized across package and plugin artifacts.
 - Plain directories are now first-class workspaces: Git is optional by default, provider context stays scoped to the invocation directory, and Codex's non-Git execution path remains enabled.
 - Sensitive path patterns, escaping symlinks, and nested repositories are excluded from provider context and protected by the Linux subprocess policy; excluded access is skipped without policy retries.
 - Provider calls no longer inherit a 20-minute wall-clock kill timer. Watchdog thresholds now request explicit human approval and keep the agent alive whenever approval is declined, missing, or unavailable.

@@ -1,4 +1,4 @@
-# Release checklist (v0.1.0 public release)
+# Release checklist (v0.2.0 public release)
 
 This project uses a lightweight release flow you can run from a clean local checkout.
 
@@ -13,10 +13,9 @@ This project uses a lightweight release flow you can run from a clean local chec
 - [ ] Update metadata:
   - `pyproject.toml` version
   - `src/agent_relay/__init__.py` `__version__`
-  - `plugins/stringbean/.codex-plugin/plugin.json` version
-  - `plugins/grok-stringbean/.grok-plugin/plugin.json` version
-  - `plugins/claude-stringbean/.claude-plugin/plugin.json` version
+  - plugin manifest versions in `plugins/*/.*-plugin/plugin.json`
   - `CHANGELOG.md`
+  - `README.md` current release line
 - [ ] Run full tests:
 
   ```bash
@@ -26,6 +25,7 @@ This project uses a lightweight release flow you can run from a clean local chec
 - [ ] Verify the CLI still works for core commands:
 
   ```bash
+  python -m agent_relay.cli --version
   stringbean --version
   sbx --help
   ./plugins/grok-stringbean/scripts/sbx-grok "Quick plugin smoke test" --dry-run
@@ -37,7 +37,8 @@ This project uses a lightweight release flow you can run from a clean local chec
   stringbean status
   ```
 
-- [ ] Confirm example configs and docs are coherent (`README.md`, `RELEASE.md`, `CONTRIBUTING.md`).
+- [ ] Confirm example configs and docs are coherent (`README.md`, `RELEASE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `docs/hosting.md`).
+- [ ] Inspect local Markdown links, or run the configured Markdown link checker if one has been added.
 - [ ] Smoke test run path with a small task (from any directory if desired):
 
   ```bash
@@ -71,20 +72,19 @@ Artifacts should appear in `dist/`:
 2. Tag the release commit:
 
    ```bash
-   git tag -a v0.1.0 -m "Release v0.1.0"
-   git push origin v0.1.0
+   git tag -a v0.2.0 -m "Release v0.2.0"
+   git push origin v0.2.0
    ```
 
 3. On GitHub: `Releases → Create a new release`
-   - Tag: `v0.1.0`
-   - Title: `stringbean v0.1.0`
+   - Tag: `v0.2.0`
+   - Title: `stringbean v0.2.0`
    - Paste changelog excerpt from `CHANGELOG.md`
    - Attach wheel/tarball artifacts from `dist/` (optional if PyPI handles distribution)
 
 ## 4) Optional: publish to PyPI
 
 ```bash
-python -m pip install twine
 python -m twine check dist/*
 python -m twine upload dist/*
 ```
@@ -102,3 +102,4 @@ Use the draft in `docs/x_post.md` (or adapt) and include:
 - Update pinned defaults if needed.
 - Open any follow-up issues from smoke test notes.
 - Keep a changelog entry for known limitations and next iteration.
+- Confirm the hosted README points users to local setup, not a nonexistent hosted service.

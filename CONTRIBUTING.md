@@ -18,6 +18,14 @@ python -m pip install -e ".[dev]"
 
 Python 3.10, 3.11, and 3.12 are tested in CI.
 
+Run the local CLI from the checkout with either the installed console scripts or the source wrappers:
+
+```bash
+stringbean --version
+sbx --help
+./scripts/sbx "Quick smoke test" --dry-run --mode low
+```
+
 ## Development checks
 
 Run the full test suite before opening a PR:
@@ -50,7 +58,8 @@ Before a release, include:
 1. Tests passing.
 2. `README.md` updated for any command/interface changes.
 3. `CHANGELOG.md` entry.
-4. Release checklist in `RELEASE.md` completed.
+4. `docs/hosting.md` checked for hosted-vs-local behavior.
+5. Release checklist in `RELEASE.md` completed.
 
 ## Reporting
 

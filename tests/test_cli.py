@@ -49,7 +49,7 @@ def test_cli_help_available():
 def test_cli_version_available():
     result = runner.invoke(cli.app, ["--version"])
     assert result.exit_code == 0
-    assert "stringbean 0.1.0" in result.stdout
+    assert "stringbean 0.2.0" in result.stdout
 
 
 def test_run_help_lists_agent_stream_switch():
@@ -88,6 +88,32 @@ def test_installed_sbx_entrypoint_accepts_unquoted_prompt_words(monkeypatch):
     cli.sbx_main()
 
     assert captured == [["stringbean", "run", "enumerate bugs", "--dry-run", "--quiet"]]
+
+
+def test_sbx_parser_keeps_run_options_out_of_task_text():
+    task, run_args = cli._split_sbx_args(
+        [
+            "run",
+            "inspect",
+            "policy",
+            "--mode",
+            "low",
+            "--policy-retries=1",
+            "-ro",
+            "--",
+            "--literal",
+            "task",
+            "words",
+        ]
+    )
+
+    assert task == "inspect policy --literal task words"
+    assert run_args == ["--mode", "low", "--policy-retries=1", "-ro"]
+
+
+def test_sbx_parser_rejects_missing_option_value():
+    with pytest.raises(cli.typer.BadParameter, match="Option requires a value: --mode"):
+        cli._split_sbx_args(["inspect", "repo", "--mode"])
 
 
 def test_installed_sbx_entrypoint_help_exits_cleanly(monkeypatch, capsys):
@@ -176,6 +202,7 @@ def test_sbx_plugin_final_alias_emits_sentinel_block():
     assert "Status: DRY_RUN" in result.stdout
     assert "STRINGBEAN_RESULT_END" in result.stdout
     assert "STRINGBEAN_FINAL_END" in result.stdout
+    assert "'dry_run': True" not in result.stdout
 
 
 def test_sbx_plugin_full_output_emits_normal_output_and_sentinel_block():
@@ -576,6 +603,39 @@ def test_cli_repeated_run_id_returns_usable_suffixed_run_dir(tmp_path: Path, mon
     assert second_state["run_dir"] == str(second_run_dir)
 
 
+def test_compact_output_config_loading_suppresses_reserved_warnings(tmp_path: Path, recwarn):
+    config_path = tmp_path / "reserved.yaml"
+    config_path.write_text(
+        """
+agents:
+  local:
+    name: local
+    adapter: generic
+    model: fake
+    role: orchestrator
+    permissions: read_write
+    command: [cat]
+workflow:
+  orchestrator: local
+  testers: [qa]
+repository:
+  create_checkpoint_commits: true
+output: {}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    with pytest.warns(cli.UnsupportedConfigWarning):
+        cli._load_config_for_output(config_path)
+
+    recwarn.clear()
+    loaded = cli._load_config_for_output(config_path, suppress_reserved_warnings=True)
+
+    assert loaded.workflow.testers == ["qa"]
+    assert loaded.repository.create_checkpoint_commits is True
+    assert not recwarn
+
+
 def test_resume_legacy_state_defaults_to_ro_and_allows_rw_override(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_config", lambda _path: cli._default_config())
@@ -610,3 +670,25 @@ def test_resume_legacy_state_defaults_to_ro_and_allows_rw_override(tmp_path: Pat
     assert result.exit_code == 0
     assert "Execution profile: rw" in result.stdout
     assert used_profiles == ["ro", "rw"]
+
+
+def test_resume_uses_persisted_profile_when_no_override(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_config", lambda _path: cli._default_config())
+    used_profiles: list[str] = []
+
+    class FakeWorkflowEngine:
+        def __init__(self, _cfg, _run_dir, _state, **kwargs):
+            used_profiles.append(kwargs["execution_profile"])
+
+        async def run(self, **_kwargs):
+            return {"status": "COMPLETED"}
+
+    monkeypatch.setattr(cli, "WorkflowEngine", FakeWorkflowEngine)
+
+    create_new_run(tmp_path, "rw-resume", "RW resume", 20, {}, execution_profile="rw")
+    result = runner.invoke(cli.app, ["resume", "rw-resume"])
+
+    assert result.exit_code == 0
+    assert "Execution profile: rw" in result.stdout
+    assert used_profiles == ["rw"]

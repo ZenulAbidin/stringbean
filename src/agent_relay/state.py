@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -16,10 +16,16 @@ def now_iso() -> str:
 
 
 def write_atomic_json(path: Path, payload: Dict[str, Any]) -> None:
+    """Write critical run state via replace so resume never sees partial JSON."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def write_pretty_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 class RunDirectory:
@@ -79,6 +85,9 @@ class RunState:
     def load(cls, path: Path) -> "RunState":
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("execution_profile") is None:
+            # Older persisted runs had no profile field. Resume them as ro so a
+            # restart does not grant broader write behavior than the saved state
+            # can describe.
             data["execution_profile"] = "ro"
         return cls(path, RunStateModel.model_validate(data))
 
@@ -144,17 +153,14 @@ def create_new_run(
         ),
     )
     state.write()
-    rd.manifest.write_text(
-        json.dumps(
-            {
-                "run_id": rd.run_id,
-                "task": task,
-                "status": RunStatus.RECEIVED.value,
-                "execution_profile": execution_profile,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_pretty_json(
+        rd.manifest,
+        {
+            "run_id": rd.run_id,
+            "task": task,
+            "status": RunStatus.RECEIVED.value,
+            "execution_profile": execution_profile,
+        },
     )
     return rd
 
@@ -192,7 +198,7 @@ class CallStore:
         (call_dir / "prompt.md").write_text(prompt, encoding="utf-8")
         (call_dir / "stdout.txt").write_text(result.raw_stdout, encoding="utf-8")
         (call_dir / "stderr.txt").write_text(result.raw_stderr, encoding="utf-8")
-        (call_dir / "result.json").write_text(json.dumps(result.model_dump(mode="json"), indent=2), encoding="utf-8")
+        write_pretty_json(call_dir / "result.json", result.model_dump(mode="json"))
         meta = {
             "command": result.command,
             "start_time": result.start_time,
@@ -200,5 +206,5 @@ class CallStore:
             "duration_seconds": result.duration_seconds,
             "exit_code": result.exit_code,
         }
-        (call_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        write_pretty_json(call_dir / "metadata.json", meta)
         return result

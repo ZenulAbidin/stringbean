@@ -120,6 +120,7 @@ def path_matches_patterns(path: str | Path, patterns: Sequence[str]) -> bool:
 
 
 def _read_exclusion_file(root: Path) -> tuple[str, ...]:
+    """Read local exclusion patterns if the ignore file is small and regular."""
     path = root / EXCLUSION_FILE_NAME
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_IGNORE_FILE_BYTES:
@@ -159,6 +160,7 @@ class RepositoryExclusions:
         *,
         exclude_nested_repositories: bool = True,
     ) -> "RepositoryExclusions":
+        """Discover concrete protected paths without descending into them."""
         root = Path(root).resolve()
         patterns = (*DEFAULT_EXCLUDED_PATHS, *_read_exclusion_file(root), *(str(p) for p in configured_patterns))
         nested_roots: list[str] = []
@@ -183,6 +185,8 @@ class RepositoryExclusions:
                     protected.append(child)
                     continue
                 if _is_outside_symlink(root, child):
+                    # A symlink that resolves outside the workspace is treated
+                    # as protected even if its link name looks harmless.
                     protected.extend((child, child.resolve(strict=False)))
                     continue
                 if exclude_nested_repositories and _is_nested_repository(child):
@@ -229,6 +233,7 @@ class RepositoryExclusions:
             return None
 
     def is_excluded(self, path: str | Path) -> bool:
+        """Return true for paths outside the root or covered by exclusion rules."""
         relative = self.relative_path(path)
         if relative is None:
             return True

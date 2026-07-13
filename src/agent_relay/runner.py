@@ -73,6 +73,7 @@ class RunnerOutput:
 
 @dataclass
 class _OutputWatchdog:
+    """Track provider liveness without deciding whether to stop the process."""
     max_repeated_output_lines: int
     last_activity: float = field(default_factory=time.monotonic)
     acknowledged_idle_activity: float | None = None
@@ -190,6 +191,7 @@ def _pump_stream(
 
 
 async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
+    """Run a provider command while streaming output and recording watchdog events."""
     start = time.time()
     monotonic_start = time.monotonic()
     start_iso = _timestamp_iso(start)
@@ -302,6 +304,8 @@ async def run_subprocess(cfg: RunnerConfig) -> RunnerOutput:
                         code = proc.returncode
                         break
                     raise WatchdogTermination(watchdog_event)
+                # Warn once per idle interval or repeated line until new output
+                # arrives; continuing is the safe default when approval is absent.
                 watchdog.acknowledge()
                 if watchdog_event.kind == "wall_clock":
                     wall_clock_acknowledged = True

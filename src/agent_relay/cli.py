@@ -19,7 +19,6 @@ from . import __version__
 from .config import (
     AgentConfig,
     Config,
-    PROJECT_DIR_NAME,
     PROJECT_NAME,
     UnsupportedConfigWarning,
     active_project_dir,
@@ -894,6 +893,8 @@ def _print_labeled(label: str, value: str) -> None:
 
 
 def _print_codex_final_summary(summary: dict, *, dry_run: bool) -> None:
+    # Plugin wrappers scan for this exact final block even when the workflow
+    # reports failure, so keep ordinary console formatting outside the sentinels.
     print("STRINGBEAN_FINAL_START")
     print("STRINGBEAN_RESULT_START")
     if dry_run:

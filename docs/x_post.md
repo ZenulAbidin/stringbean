@@ -40,6 +40,8 @@ If you're curious, check the setup in the repo and run a smoke test:
 
 Link: github.com/<your-org>/stringbean
 
+Before posting, replace the placeholder repository URL with the final hosted release URL.
+
 ## Alternative short copy
 
 🌱 Open-sourced a practical alternative to monolithic agent wrappers: **stringbean**.

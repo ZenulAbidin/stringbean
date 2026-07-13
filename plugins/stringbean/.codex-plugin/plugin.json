@@ -1,6 +1,6 @@
 {
   "name": "stringbean",
-  "version": "0.1.0+codex.20260713154557",
+  "version": "0.2.0+codex.20260713154557",
   "description": "Use Stringbean's sbx orchestrator from inside Codex.",
   "author": {
     "name": "Stringbean"
