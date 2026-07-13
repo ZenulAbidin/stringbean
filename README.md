@@ -368,7 +368,7 @@ Preset D (fine-grained model mix):
 - Claude: Opus 4.8, Fable 5, Sonnet 5
 - Grok: build/review profiles
 
-`--mode auto` will infer high/medium/low from task text and select matching agents across roles where available. You can pin by role with `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, and `--reviewer-mode`.
+`--mode auto` enumerates the configured candidate agents/models for each role, infers high/medium/low from the task text, then selects the lowest-cost adequate candidate for that role. Dry runs include `available_models` and `selection_rationale` so you can see what was considered and why an agent was selected. Simple read/list/show tasks route to low reasoning candidates; complex refactors, migrations, security, architecture, and distributed-system tasks route to stronger high reasoning candidates. You can pin by role with `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, and `--reviewer-mode`.
 
 Create it with:
 

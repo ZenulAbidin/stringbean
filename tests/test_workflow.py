@@ -9,6 +9,7 @@ import tempfile
 
 import pytest
 
+import agent_relay.workflow as workflow_module
 from agent_relay.config import AgentConfig, Config, OutputConfig, RepositoryConfig, WorkflowConfig
 from agent_relay.state import RunState, create_new_run
 from agent_relay.workflow import WorkflowEngine
@@ -228,6 +229,40 @@ def test_repo_delta_keeps_arrow_like_filename_as_single_path(tmp_path: Path):
     assert engine._display_status_paths(changed) == ["notes -> draft.txt"]
     assert allowed == []
     assert engine._display_status_paths(denied) == ["notes -> draft.txt"]
+
+
+def test_non_git_snapshot_uses_metadata_for_large_files(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    large = repo / "large.bin"
+    large.write_bytes(b"x" * 32)
+    monkeypatch.setattr(workflow_module, "_NON_GIT_MAX_HASH_BYTES", 8)
+    run_dir = create_new_run(tmp_path / "runs", "run-large-non-git", "Large non-git", 10, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(_build_config(tmp_path / "unused-agent"), run_dir, state, quiet=True)
+    engine.repo_root = repo
+
+    before = engine._repo_status_snapshot()
+    before_contents = engine._repo_baseline_content_snapshot(before)
+    large.write_bytes(b"y" * 33)
+    after = engine._repo_status_snapshot()
+    after_contents = engine._repo_content_snapshot_for_paths(before_contents)
+    changed, allowed, denied = engine._classify_repo_delta(
+        before,
+        after,
+        allow_creates=False,
+        before_contents=before_contents,
+        after_contents=after_contents,
+    )
+
+    assert before["large.bin"].startswith("NG:file-large:")
+    assert before_contents["large.bin"][0] == "file-large"
+    assert len(before_contents["large.bin"][1]) < 64
+    assert changed == ["large.bin"]
+    assert allowed == []
+    assert denied == ["large.bin"]
+    engine._rollback_read_only_changes(changed, before, after, before_contents)
+    assert large.read_bytes() == b"y" * 33
 
 
 def test_repo_status_entries_parses_porcelain_z_static_bytes():
@@ -2253,3 +2288,73 @@ def test_auto_mode_infers_mode_from_task_complexity(tmp_path: Path):
     engine2 = WorkflowEngine(cfg, run_dir2, state2)
     complex_result = asyncio.run(engine2.run("Refactor distributed architecture and rewrite migration flow", dry_run=True))
     assert complex_result["selected_agents"]["advisor"] == "advisor-high"
+
+
+def test_auto_mode_enumerates_models_and_selects_lightweight_candidates(tmp_path: Path):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    cfg.agents["low-worker"] = AgentConfig(
+        name="low-worker",
+        adapter="generic",
+        role="implementer",
+        permissions="read_write",
+        command=[str(fake)],
+        model="cheap-low-model",
+        environment_overrides={"AGENT_ROLE": "implementer"},
+        mode="low",
+    )
+    cfg.agents["high-worker"] = AgentConfig(
+        name="high-worker",
+        adapter="generic",
+        role="implementer",
+        permissions="read_write",
+        command=[str(fake)],
+        model="expensive-high-model",
+        environment_overrides={"AGENT_ROLE": "implementer"},
+        mode="high",
+    )
+    cfg.agents["low-advisor"] = AgentConfig(
+        name="low-advisor",
+        adapter="generic",
+        role="advisor",
+        permissions="read_only",
+        command=[str(fake)],
+        model="cheap-low-review",
+        environment_overrides={"AGENT_ROLE": "advisor"},
+        mode="low",
+    )
+    cfg.agents["low-reviewer"] = AgentConfig(
+        name="low-reviewer",
+        adapter="generic",
+        role="reviewer",
+        permissions="read_only",
+        command=[str(fake)],
+        model="cheap-low-review",
+        environment_overrides={"AGENT_ROLE": "reviewer"},
+        mode="low",
+    )
+    cfg.workflow.orchestrator = "high-worker"
+    cfg.workflow.implementers = ["low-worker", "high-worker"]
+    cfg.workflow.advisors = ["low-advisor", "advisor"]
+    cfg.workflow.reviewers = ["low-reviewer", "reviewer"]
+
+    run_dir = create_new_run(tmp_path, "run-mode-catalog", "list /tmp", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    result = asyncio.run(engine.run("list /tmp", dry_run=True))
+
+    assert result["selected_modes"] == {
+        "orchestrator": "low",
+        "advisor": "low",
+        "implementer": "low",
+        "reviewer": "low",
+    }
+    assert result["selected_agents"]["orchestrator"] == "low-worker"
+    assert result["selected_agents"]["implementer"] == "low-worker"
+    assert result["selected_agents"]["advisor"] == "low-advisor"
+    assert result["selected_agents"]["reviewer"] == "low-reviewer"
+    assert any(item["name"] == "high-worker" for item in result["available_models"]["orchestrator"])
+    assert any(item["name"] == "low-worker" for item in result["available_models"]["implementer"])
+    assert "selected low-worker" in result["selection_rationale"]["implementer"]

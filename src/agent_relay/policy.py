@@ -244,6 +244,9 @@ def apply_codex_execution_profile(command: Sequence[str], profile: str) -> list[
 
     if len(out) >= 2 and Path(out[0]).name == "codex" and "exec" in out[1:]:
         exec_index = out.index("exec", 1)
+        exec_args = out[exec_index + 1 :]
+        if "--skip-git-repo-check" not in exec_args:
+            exec_args = ["--skip-git-repo-check", *exec_args]
         return [
             out[0],
             "--ask-for-approval",
@@ -252,7 +255,7 @@ def apply_codex_execution_profile(command: Sequence[str], profile: str) -> list[
             codex_sandbox_for_profile(profile),
             *out[1:exec_index],
             out[exec_index],
-            *out[exec_index + 1 :],
+            *exec_args,
         ]
     return out
 

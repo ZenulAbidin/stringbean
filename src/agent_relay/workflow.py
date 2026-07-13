@@ -64,6 +64,9 @@ ADAPTERS = {
 MODE_CHOICES = {"auto", "low", "medium", "high"}
 _STATUS_RENAME_SEPARATOR = "\0"
 _NON_GIT_STATUS_PREFIX = "NG:"
+_NON_GIT_MAX_HASH_BYTES = 8 * 1024 * 1024
+_NON_GIT_MAX_WALK_DEPTH = 3
+_NON_GIT_MAX_WALK_ENTRIES = 2000
 PathContentState = Tuple[str, bytes, Optional[int]]
 
 
@@ -74,6 +77,20 @@ def _now_iso() -> str:
 def infer_mode_for_task(task: str) -> str:
     """Heuristic mode inference from task text."""
     normalized = task.lower()
+    low_signals = (
+        "list",
+        "ls ",
+        "/tmp",
+        "contents",
+        "contets",
+        "show",
+        "print",
+        "read",
+        "cat ",
+        "typo",
+        "inspect",
+        "enumerate",
+    )
     high_signals = (
         "refactor",
         "architecture",
@@ -114,6 +131,8 @@ def infer_mode_for_task(task: str) -> str:
         "integration tests",
     )
 
+    if any(token in normalized for token in low_signals) and len(task.split()) <= 12:
+        return "low"
     if any(token in normalized for token in high_signals):
         return "high"
     if any(token in normalized for token in medium_signals):
@@ -661,14 +680,8 @@ class WorkflowEngine:
             for idx in range(1, len(path_parts)):
                 parent = Path(*path_parts[:idx]).as_posix()
                 if parent not in entries:
-                    kind, content, mode = self._path_content_state(parent)
-                    digest = hashlib.sha256(content).hexdigest()
-                    mode_text = "" if mode is None else f":{mode:o}"
-                    entries[parent] = f"{_NON_GIT_STATUS_PREFIX}{kind}:{digest}{mode_text}"
-            kind, content, mode = self._path_content_state(path)
-            digest = hashlib.sha256(content).hexdigest()
-            mode_text = "" if mode is None else f":{mode:o}"
-            entries[path] = f"{_NON_GIT_STATUS_PREFIX}{kind}:{digest}{mode_text}"
+                    entries[parent] = self._non_git_status_for_path(parent)
+            entries[path] = self._non_git_status_for_path(path)
         return entries
 
     def _is_internal_run_path(self, path: Path) -> bool:
@@ -680,37 +693,53 @@ class WorkflowEngine:
 
     def _non_git_status_snapshot(self) -> Dict[str, str]:
         entries: Dict[str, str] = {}
+        seen_entries = 0
         for current_root, dir_names, file_names in os.walk(self.repo_root, topdown=True, followlinks=False):
             root_path = Path(current_root)
+            try:
+                rel_root = root_path.relative_to(self.repo_root)
+            except ValueError:
+                continue
+            if len(rel_root.parts) >= _NON_GIT_MAX_WALK_DEPTH:
+                dir_names[:] = []
             kept_dirs = []
             for dir_name in dir_names:
                 dir_path = root_path / dir_name
                 if dir_name == ".git" or self._is_internal_run_path(dir_path):
                     continue
+                if seen_entries >= _NON_GIT_MAX_WALK_ENTRIES:
+                    continue
                 kept_dirs.append(dir_name)
                 rel_dir = dir_path.relative_to(self.repo_root).as_posix()
                 entries[rel_dir] = f"{_NON_GIT_STATUS_PREFIX}dir"
+                seen_entries += 1
             dir_names[:] = kept_dirs
 
             for file_name in file_names:
+                if seen_entries >= _NON_GIT_MAX_WALK_ENTRIES:
+                    break
                 file_path = root_path / file_name
                 if self._is_internal_run_path(file_path):
                     continue
                 rel_file = file_path.relative_to(self.repo_root).as_posix()
                 try:
-                    if file_path.is_symlink():
-                        target = os.readlink(file_path).encode("utf-8", errors="surrogateescape")
-                        digest = hashlib.sha256(target).hexdigest()
-                        entries[rel_file] = f"{_NON_GIT_STATUS_PREFIX}symlink:{digest}"
-                        continue
-                    if not file_path.is_file():
-                        entries[rel_file] = f"{_NON_GIT_STATUS_PREFIX}other"
-                        continue
-                    digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
-                    entries[rel_file] = f"{_NON_GIT_STATUS_PREFIX}file:{digest}"
+                    entries[rel_file] = self._non_git_status_for_path(rel_file)
+                    seen_entries += 1
                 except OSError:
                     entries[rel_file] = f"{_NON_GIT_STATUS_PREFIX}unreadable"
+                    seen_entries += 1
+            if seen_entries >= _NON_GIT_MAX_WALK_ENTRIES:
+                entries[".stringbean-non-git-snapshot-truncated"] = (
+                    f"{_NON_GIT_STATUS_PREFIX}truncated:{seen_entries}"
+                )
+                break
         return entries
+
+    def _non_git_status_for_path(self, path: str) -> str:
+        kind, content, mode = self._path_content_state(path)
+        digest = hashlib.sha256(content).hexdigest()
+        mode_text = "" if mode is None else f":{mode:o}"
+        return f"{_NON_GIT_STATUS_PREFIX}{kind}:{digest}{mode_text}"
 
     def _path_content_state(self, path: str) -> PathContentState:
         full_path = self.repo_root / path
@@ -727,7 +756,13 @@ class WorkflowEngine:
                 return ("unreadable", b"", mode)
         if full_path.is_dir():
             return ("dir", b"", mode)
+        if not full_path.is_file():
+            return ("other", b"", mode)
         try:
+            stat_result = full_path.stat()
+            if stat_result.st_size > _NON_GIT_MAX_HASH_BYTES:
+                metadata = f"{stat_result.st_size}:{stat_result.st_mtime_ns}".encode("ascii")
+                return ("file-large", metadata, mode)
             return ("file", full_path.read_bytes(), mode)
         except OSError:
             return ("unreadable", b"", mode)
@@ -768,6 +803,13 @@ class WorkflowEngine:
 
     def _repo_baseline_content_snapshot(self, status_entries: Dict[str, str]) -> Dict[str, PathContentState]:
         snapshot: Dict[str, PathContentState] = {}
+        if not self._is_git_worktree():
+            for status_path in status_entries:
+                old_path, new_path = self._split_status_path(status_path)
+                snapshot[old_path] = self._path_content_state(old_path)
+                if new_path:
+                    snapshot[new_path] = self._path_content_state(new_path)
+            return snapshot
         for current_root, dir_names, _ in os.walk(self.repo_root, topdown=True, followlinks=False):
             root_path = Path(current_root)
             kept_dirs = []
@@ -913,7 +955,13 @@ class WorkflowEngine:
 
     def _agent_candidates_for_role(self, role: str) -> List[str]:
         if role == "orchestrator":
-            return [self.config.workflow.orchestrator]
+            candidates = [self.config.workflow.orchestrator]
+            for name, agent in self.config.agents.items():
+                if name in candidates:
+                    continue
+                if agent.adapter == "codex" or agent.permissions == "read_write":
+                    candidates.append(name)
+            return candidates
         if role == "advisor":
             return list(self.config.workflow.advisors)
         if role == "implementer":
@@ -921,6 +969,104 @@ class WorkflowEngine:
         if role == "reviewer":
             return list(self.config.workflow.reviewers)
         return []
+
+    @staticmethod
+    def _mode_score(candidate_mode: Optional[str], requested_mode: str) -> int:
+        rank = {"low": 0, "medium": 1, "high": 2}
+        candidate_rank = rank.get(candidate_mode or "", 1)
+        requested_rank = rank.get(requested_mode, 1)
+        if candidate_rank == requested_rank:
+            return 0
+        if candidate_rank > requested_rank:
+            return (candidate_rank - requested_rank) * 4
+        return (requested_rank - candidate_rank) * 20
+
+    @staticmethod
+    def _model_cost_score(agent: AgentConfig, requested_mode: str) -> int:
+        model = (agent.model or "").lower()
+        if requested_mode == "high":
+            if "gpt-5.6" in model:
+                return 0
+            if "opus" in model:
+                return 1
+            if "gpt-5.5" in model:
+                return 2
+            if "grok" in model:
+                return 3
+            return 4
+        if requested_mode == "medium":
+            if "gpt-5.5" in model or "fable" in model:
+                return 0
+            if "gpt-5.6" in model or "grok" in model:
+                return 2
+            if "sonnet" in model:
+                return 3
+            if "opus" in model:
+                return 5
+            return 4
+        if "gpt-5.5" in model:
+            return 0
+        if "sonnet" in model:
+            return 1
+        if "fable" in model or "grok" in model:
+            return 2
+        if "gpt-5.6" in model:
+            return 4
+        if "opus" in model:
+            return 6
+        return 3
+
+    def _agent_selection_score(self, role: str, agent_name: str, requested_mode: str) -> Tuple[int, int, int, int]:
+        agent = self.config.agents[agent_name]
+        mode = self._agent_mode(agent_name)
+        permission_penalty = 0
+        if role == "implementer" and agent.permissions != "read_write":
+            permission_penalty = 100
+        if role in {"advisor", "reviewer"} and agent.permissions == "read_write":
+            permission_penalty = 10
+        return (
+            self._mode_score(mode, requested_mode),
+            permission_penalty,
+            self._model_cost_score(agent, requested_mode),
+            list(self.config.agents).index(agent_name),
+        )
+
+    def _agent_catalog_for_role(self, role: str) -> List[Dict[str, str]]:
+        catalog: List[Dict[str, str]] = []
+        for agent_name in self._agent_candidates_for_role(role):
+            agent = self.config.agents[agent_name]
+            catalog.append(
+                {
+                    "name": agent_name,
+                    "adapter": agent.adapter,
+                    "model": agent.model or "",
+                    "mode": self._agent_mode(agent_name) or "default",
+                    "permissions": agent.permissions,
+                }
+            )
+        return catalog
+
+    def _selection_rationale(self, role: str, selected: str, requested_mode: str) -> str:
+        candidates = self._agent_candidates_for_role(role)
+        selected_agent = self.config.agents[selected]
+        selected_mode = self._agent_mode(selected) or "default"
+        exact_modes = [
+            name
+            for name in candidates
+            if self._agent_mode(name) == requested_mode
+            and (role != "implementer" or self.config.agents[name].permissions == "read_write")
+        ]
+        if exact_modes:
+            return (
+                f"auto inferred {requested_mode}; selected {selected} "
+                f"({selected_agent.model or selected_agent.adapter}, {selected_mode}) as the lowest-cost exact match "
+                f"among {len(candidates)} candidate(s)."
+            )
+        return (
+            f"auto inferred {requested_mode}; selected {selected} "
+            f"({selected_agent.model or selected_agent.adapter}, {selected_mode}) as the best available fallback "
+            f"among {len(candidates)} candidate(s)."
+        )
 
     def _agent_for_role(self, role: str, mode: Optional[str] = None, override: Optional[str] = None) -> str:
         if role in self.state.state.selected_agents and self.state.state.selected_agents.get(role):
@@ -938,9 +1084,7 @@ class WorkflowEngine:
             raise _StageTransitionError(f"Unsupported role {role}")
 
         if mode:
-            for agent_name in candidates:
-                if self._agent_mode(agent_name) == mode:
-                    return agent_name
+            return min(candidates, key=lambda agent_name: self._agent_selection_score(role, agent_name, mode))
 
         return candidates[0]
 
@@ -1322,6 +1466,8 @@ class WorkflowEngine:
             self._ensure_parent_directory(full_path)
             os.symlink(content.decode("utf-8", errors="surrogateescape"), full_path)
             return
+        if kind == "file-large":
+            return
         if os.path.lexists(full_path) and full_path.is_dir() and not full_path.is_symlink():
             shutil.rmtree(full_path, ignore_errors=True)
         elif os.path.lexists(full_path) and (full_path.is_symlink() or not full_path.is_file()):
@@ -1686,6 +1832,16 @@ class WorkflowEngine:
             "implementer": implementer,
             "reviewer": reviewer,
         }
+        available_models = {
+            role: self._agent_catalog_for_role(role)
+            for role in ("orchestrator", "advisor", "implementer", "reviewer")
+            if role != "reviewer" or review_enabled
+        }
+        selection_rationale = {
+            role: self._selection_rationale(role, agent_name, resolved_modes[role])
+            for role, agent_name in selected_agents.items()
+            if agent_name
+        }
         selected_preview = ", ".join(
             f"{role}={agent_name or 'none'}"
             for role, agent_name in selected_agents.items()
@@ -1697,6 +1853,10 @@ class WorkflowEngine:
         )
         self._progress(
             f"Progress: Selected agents — {selected_preview}; modes: {mode_preview}; profile={self.execution_profile}."
+        )
+        self._progress(
+            "Progress: Auto-selection rationale — "
+            + "; ".join(selection_rationale.values())
         )
 
         repository_git = self._is_git_worktree()
@@ -1724,8 +1884,10 @@ class WorkflowEngine:
 
             return {
                 "dry_run": True,
+                "available_models": available_models,
                 "selected_agents": selected_agents,
                 "selected_modes": resolved_modes,
+                "selection_rationale": selection_rationale,
                 "execution_profile": self.execution_profile,
                 "stages": [
                     RunStatus.PLANNING.value,

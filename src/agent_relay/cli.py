@@ -293,12 +293,32 @@ def _preset_config(preset: str) -> Config:
                     mode="medium",
                     prompt_transport="stdin",
                 ),
+                "gpt55-medium-rw": AgentConfig(
+                    name="gpt55-medium-rw",
+                    adapter="codex",
+                    model="gpt-5.5",
+                    role="implementer",
+                    permissions="read_write",
+                    command=_codex_command("gpt-5.5", "medium"),
+                    mode="medium",
+                    prompt_transport="stdin",
+                ),
                 "gpt55-low": AgentConfig(
                     name="gpt55-low",
                     adapter="codex",
                     model="gpt-5.5",
                     role="advisor",
                     permissions="read_only",
+                    command=_codex_command("gpt-5.5", "low"),
+                    mode="low",
+                    prompt_transport="stdin",
+                ),
+                "gpt55-low-rw": AgentConfig(
+                    name="gpt55-low-rw",
+                    adapter="codex",
+                    model="gpt-5.5",
+                    role="implementer",
+                    permissions="read_write",
                     command=_codex_command("gpt-5.5", "low"),
                     mode="low",
                     prompt_transport="stdin",
@@ -356,8 +376,8 @@ def _preset_config(preset: str) -> Config:
             },
             workflow=WorkflowConfig(
                 orchestrator="gpt55-high",
-                advisors=["gpt55-medium", "claude-fable-5", "gpt56-medium"],
-                implementers=["gpt55-high", "grok-build"],
+                advisors=["gpt55-low", "gpt55-medium", "claude-fable-5", "gpt56-medium", "claude-opus-4-8"],
+                implementers=["gpt55-low-rw", "gpt55-medium-rw", "gpt55-high", "grok-build"],
                 reviewers=["gpt55-low", "claude-opus-4-8", "claude-sonnet-5", "grok-review", "gpt56-low"],
                 advisor_policy="before_implementation",
                 max_review_rounds=2,
@@ -957,7 +977,7 @@ def run(
             codex_progress=effective_codex_progress,
             progress_interval_seconds=codex_progress_interval,
         )
-    except RuntimeError as exc:
+    except Exception as exc:
         _print_run_failure(selected_run_id, task, exc)
         raise typer.Exit(code=1) from exc
     if not codex_final:
@@ -1048,7 +1068,7 @@ def resume(
                 dry_run=False,
             )
         )
-    except RuntimeError as exc:
+    except Exception as exc:
         _print_run_failure(run_id, state.state.task, exc)
         raise typer.Exit(code=1) from exc
     _print_labeled("Run ID", run_id)

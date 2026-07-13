@@ -184,6 +184,25 @@ def test_codex_final_summary_prints_singular_error_field(tmp_path: Path, monkeyp
     assert "STRINGBEAN_FINAL_END" in result.stdout
 
 
+def test_run_catches_unexpected_engine_exception_without_traceback(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".stringbean").mkdir()
+    cfg = cli._preset_config("D")
+    cfg.repository.require_git = False
+    monkeypatch.setattr(cli, "load_config", lambda _path: cfg)
+
+    def fail_engine(**_kwargs):
+        raise MemoryError("snapshot too large")
+
+    monkeypatch.setattr(cli, "_run_engine", fail_engine)
+
+    result = runner.invoke(cli.app, ["run", "inspect tmp", "--quiet"])
+
+    assert result.exit_code == 1
+    assert "Run failed: snapshot too large" in result.stdout
+    assert "Traceback" not in result.stdout
+
+
 def test_init_and_status_cycle(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])

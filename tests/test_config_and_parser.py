@@ -274,11 +274,37 @@ def test_codex_execution_profile_flags_are_forced():
     base = ["codex", "exec", "--ask-for-approval", "on-request", "--sandbox", "read-only", "-m", "gpt-5.5"]
 
     ro = apply_codex_execution_profile(base, "ro")
-    assert ro[:6] == ["codex", "--ask-for-approval", "never", "--sandbox", "workspace-write", "exec"]
+    assert ro[:7] == [
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        "workspace-write",
+        "exec",
+        "--skip-git-repo-check",
+    ]
     assert "read-only" not in ro
 
     rw = apply_codex_execution_profile(base, "rw")
-    assert rw[:6] == ["codex", "--ask-for-approval", "never", "--sandbox", "danger-full-access", "exec"]
+    assert rw[:7] == [
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        "danger-full-access",
+        "exec",
+        "--skip-git-repo-check",
+    ]
+
+
+def test_codex_execution_profile_does_not_duplicate_skip_git_repo_check():
+    base = ["codex", "exec", "--skip-git-repo-check", "-m", "gpt-5.5"]
+
+    command = apply_codex_execution_profile(base, "rw")
+
+    assert command.count("--skip-git-repo-check") == 1
+    exec_index = command.index("exec")
+    assert command[exec_index + 1] == "--skip-git-repo-check"
 
 
 def test_execution_profile_default_is_rw():
