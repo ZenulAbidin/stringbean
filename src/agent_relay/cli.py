@@ -440,7 +440,7 @@ def _check_template_availability(root: Path) -> dict[str, bool]:
 
 @app.command()
 def init(
-    preset: str = typer.Option("A", "--preset", help="Preset A, B, or C"),
+    preset: str = typer.Option("A", "--preset", help="Preset A, B, C, or D"),
     force: bool = typer.Option(False, "--force", help="Overwrite existing config"),
     create_templates: bool = typer.Option(False, "--templates", help="Create local editable templates"),
 ):
@@ -685,6 +685,60 @@ def _apply_output_flags(cfg: Config, quiet: bool, no_agent_stream: bool) -> None
         cfg.output.stream_agent_output = False
 
 
+def _selected_agent_names(
+    cfg: Config,
+    *,
+    no_advisor: bool,
+    max_review_rounds: Optional[int],
+) -> list[str]:
+    names = [cfg.workflow.orchestrator]
+    if not no_advisor:
+        names.extend(cfg.workflow.advisors)
+    names.extend(cfg.workflow.implementers)
+    effective_review_rounds = cfg.workflow.max_review_rounds if max_review_rounds is None else max_review_rounds
+    if effective_review_rounds > 0:
+        names.extend(cfg.workflow.reviewers)
+    return list(dict.fromkeys(name for name in names if name))
+
+
+def _is_placeholder_agent(agent: AgentConfig) -> bool:
+    command = agent.command or []
+    executable = Path(command[0]).name if command else ""
+    return agent.model == "local-fallback" or (
+        agent.adapter == "generic" and executable == "cat"
+    )
+
+
+def _validate_real_run_agents(
+    cfg: Config,
+    *,
+    dry_run: bool,
+    no_advisor: bool,
+    max_review_rounds: Optional[int],
+) -> None:
+    if dry_run:
+        return
+    placeholders: list[str] = []
+    for name in _selected_agent_names(
+        cfg,
+        no_advisor=no_advisor,
+        max_review_rounds=max_review_rounds,
+    ):
+        agent = cfg.agents.get(name)
+        if agent is not None and _is_placeholder_agent(agent):
+            command = " ".join(agent.command or [])
+            placeholders.append(f"{name} ({agent.model or agent.adapter}; command={command})")
+    if not placeholders:
+        return
+    formatted = ", ".join(placeholders)
+    raise RuntimeError(
+        "Configured placeholder agent(s) cannot perform a real run: "
+        f"{formatted}. These preset-C/local-fallback agents only echo prompts and cannot "
+        "return structured review JSON. Reinitialize with `stringbean init --force --preset D` "
+        "or run with `--config` pointing at a model-backed Stringbean config."
+    )
+
+
 def _load_config_for_output(path: Path, *, suppress_reserved_warnings: bool = False) -> Config:
     if not suppress_reserved_warnings:
         return load_config(path)
@@ -869,6 +923,22 @@ def run(
     _apply_overrides(cfg, orchestrator, advisor, implementer, reviewer)
     if policy_retries is not None:
         cfg.workflow.max_policy_violation_retries = policy_retries
+    try:
+        _validate_real_run_agents(
+            cfg,
+            dry_run=dry_run,
+            no_advisor=no_advisor,
+            max_review_rounds=max_review_rounds,
+        )
+    except RuntimeError as exc:
+        if codex_final:
+            _print_codex_final_summary(
+                {"status": "FAILED", "errors": str(exc)},
+                dry_run=False,
+            )
+        else:
+            console.print(f"Configuration error: {exc}")
+        raise typer.Exit(code=1) from exc
     _apply_output_flags(cfg, quiet=quiet or codex_final, no_agent_stream=no_agent_stream or codex_final)
     effective_codex_progress = bool(codex_final and codex_progress)
     selected_run_id = run_id or stable_id(PROJECT_NAME, task)
@@ -948,6 +1018,16 @@ def resume(
     else:
         cfg = load_config(config_path(root))
     _apply_output_flags(cfg, quiet=quiet, no_agent_stream=no_agent_stream)
+    try:
+        _validate_real_run_agents(
+            cfg,
+            dry_run=False,
+            no_advisor=False,
+            max_review_rounds=cfg.workflow.max_review_rounds,
+        )
+    except RuntimeError as exc:
+        console.print(f"Configuration error: {exc}")
+        raise typer.Exit(code=1) from exc
 
     run_dir = RunDirectory(root, run_id)
     engine = WorkflowEngine(

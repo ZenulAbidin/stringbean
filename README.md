@@ -106,7 +106,7 @@ stringbean run --dry-run "Implement auth checks"
 
 - `stringbean init`
   - Creates `.stringbean/config.yaml` in the current project, or `~/.stringbean/config.yaml` if no local project config directory is discovered
-  - Optional `--preset A|B|C` (default A)
+  - Optional `--preset A|B|C|D` (default A)
   - `--templates` copies editable templates into `.stringbean/templates/`
   - `--force` overwrites existing config
 - `stringbean doctor`
@@ -356,9 +356,10 @@ Preset B (Fable architecture, external implementer):
 - implementer: Grok
 - reviewer: Codex
 
-Preset C (single-provider fallback):
+Preset C (dry-run/status smoke-test fallback):
 
-- same role set reused for local fallback command
+- same role set reused for a local `cat` fallback command
+- intended for config/status smoke tests only; real runs reject this preset because it cannot return structured agent JSON
 
 Preset D (fine-grained model mix):
 

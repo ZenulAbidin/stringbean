@@ -124,6 +124,36 @@ def test_codex_plugin_sbx_wrapper_emits_sentinel_block():
     assert "STRINGBEAN_FINAL_END" in result.stdout
 
 
+def test_run_rejects_local_fallback_cat_config_before_launch(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    init = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
+    assert init.exit_code == 0
+
+    result = runner.invoke(cli.app, ["run", "real task", "--quiet"])
+
+    assert result.exit_code == 1
+    assert "Configuration error:" in result.stdout
+    assert "Configured placeholder agent(s) cannot perform a real run" in result.stdout
+    assert "local-fallback" in result.stdout
+    assert not (tmp_path / ".stringbean" / "runs").exists()
+
+
+def test_codex_final_rejects_local_fallback_cat_config_with_sentinel_block(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    init = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
+    assert init.exit_code == 0
+
+    result = runner.invoke(cli.app, ["run", "real task", "--codex-final"])
+
+    assert result.exit_code == 1
+    assert "STRINGBEAN_FINAL_START" in result.stdout
+    assert "STRINGBEAN_RESULT_START" in result.stdout
+    assert "Status: FAILED" in result.stdout
+    assert "Configured placeholder agent(s) cannot perform a real run" in result.stdout
+    assert "STRINGBEAN_RESULT_END" in result.stdout
+    assert "STRINGBEAN_FINAL_END" in result.stdout
+
+
 def test_init_and_status_cycle(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["init", "--force", "--preset", "C"])
