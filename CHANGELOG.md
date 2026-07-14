@@ -2,33 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Claude Code plugin runs now use the native `Monitor` tool so intermediate Stringbean lines remain visible throughout long runs, with an incremental background-task fallback where Monitor is unavailable.
-- Read-only Linux agents now have workspace mutations denied before they happen; ignored build trees use metadata-only baseline checks instead of eagerly hashing file contents.
-- Claude presets now use the supported `opus`, `sonnet`, and `haiku` aliases with appropriate effort levels, while legacy pinned or invalid model names are normalized at runtime.
-
-## [0.2.0] - 2026-07-13
-
-### Changed
-
-- Assigned the public hostable release version and propagated it through package metadata, runtime version output, tests, and release documentation.
-- Improved readability in adapter command construction, run persistence helpers, workflow status parsing, and structured output formatting without changing public artifact schemas.
-- Synchronized package metadata and runtime version for the next hostable release.
-
-### Fixed
-
-- Release checklist again includes shipped plugin manifests, and release metadata now stays synchronized across package and plugin artifacts.
-- Plain directories are now first-class workspaces: Git is optional by default, provider context stays scoped to the invocation directory, and Codex's non-Git execution path remains enabled.
-- Sensitive path patterns, escaping symlinks, and nested repositories are excluded from provider context and protected by the Linux subprocess policy; excluded access is skipped without policy retries.
-- Provider calls no longer inherit a 20-minute wall-clock kill timer. Watchdog thresholds now request explicit human approval and keep the agent alive whenever approval is declined, missing, or unavailable.
-- Preset C now generates real Grok Build agents at low, medium, and high reasoning levels instead of unusable `cat` placeholder agents.
-- Agent-plugin runs now emit every provider-process launch plus five-second keepalives, and Grok calls stream safely without exposing hidden thought events.
-- Claude calls now use noninteractive stream JSON with immediate pipe forwarding, compact tool/result formatting, and valid full model IDs.
-- Claude Code's plugin now defaults to compact live output so raw prompts do not overwhelm its tool result, while preserving a zero-exit sentinel on workflow failure.
-- Claude Code's skill now separates task text from flags and waits on background task output instead of ending its turn before the final sentinel.
-- Explicit per-role agent choices now take precedence over automatic mode selection.
-
 ## [0.1.0] - 2026-07-13
 
 ### Added
@@ -63,6 +36,7 @@
 - Grok agents now use Grok Build's headless argv/file prompt transports instead of stdin.
 - Plugin wrappers now use full visible output mode by default; compact `--codex-final` remains available.
 - Local wrapper shims reduce PATH/global environment mismatch issues.
+- Improved readability in adapter command construction, run persistence helpers, workflow status parsing, and structured output formatting without changing public artifact schemas.
 
 ### Fixed
 
@@ -71,6 +45,19 @@
 - Placeholder `cat` fallback agents are rejected before real runs.
 - Provider output streaming is sanitized and formatted for terminal/Codex consumption.
 - Generated local probe state and fake implementer artifacts are no longer tracked.
+- Release checklist again includes shipped plugin manifests, and release metadata now stays synchronized across package and plugin artifacts.
+- Plain directories are now first-class workspaces: Git is optional by default, provider context stays scoped to the invocation directory, and Codex's non-Git execution path remains enabled.
+- Sensitive path patterns, escaping symlinks, and nested repositories are excluded from provider context and protected by the Linux subprocess policy; excluded access is skipped without policy retries.
+- Provider calls no longer inherit a 20-minute wall-clock kill timer. Watchdog thresholds now request explicit human approval and keep the agent alive whenever approval is declined, missing, or unavailable.
+- Preset C now generates real Grok Build agents at low, medium, and high reasoning levels instead of unusable `cat` placeholder agents.
+- Agent-plugin runs now emit every provider-process launch plus five-second keepalives, and Grok calls stream safely without exposing hidden thought events.
+- Claude calls now use noninteractive stream JSON with immediate pipe forwarding, compact tool/result formatting, and valid full model IDs.
+- Claude Code's plugin now defaults to compact live output so raw prompts do not overwhelm its tool result, while preserving a zero-exit sentinel on workflow failure.
+- Claude Code's skill now separates task text from flags and waits on background task output instead of ending its turn before the final sentinel.
+- Explicit per-role agent choices now take precedence over automatic mode selection.
+- Claude Code plugin runs now use the native `Monitor` tool so intermediate Stringbean lines remain visible throughout long runs, with an incremental background-task fallback where Monitor is unavailable.
+- Read-only Linux agents now have workspace mutations denied before they happen; ignored build trees use metadata-only baseline checks instead of eagerly hashing file contents.
+- Claude presets now use the supported `opus`, `sonnet`, and `haiku` aliases with appropriate effort levels, while legacy pinned or invalid model names are normalized at runtime.
 
 ## 0.0.1 - 2026-07-11
 

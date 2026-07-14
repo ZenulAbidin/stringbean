@@ -4,29 +4,30 @@ stringbean is a lightweight local orchestrator for coding-agent CLIs. It coordin
 agents (Codex, Claude, Grok, or any generic CLI adapter) without replacing native interfaces, keeps a
 filesystem audit trail, and runs a small resumable workflow.
 
-It is not a provider UI and does not handle API keys. It is intentionally minimal: a local subprocess
-supervisor with inspectable artifacts.
+It is designed to run headlessly and be called from your favorite agent program (codex, claude code, etc) using `/sbx`. It can be run in read-only mode or in read-write mode (the default).
 
-Current release: `0.2.0`.
+Current release: `0.1.0`.
 
 ## What this project does
+
+Stringbean is excellent for running complex tasks which require long durations. Each invocation runs several advisor and orchestrator agents while auto-selecting the most efficient model with a reasonable quota. This way, you can avoid running your entire session in Fable or Sol and burning through your usage limit.
 
 - Runs an MCP-style workflow (planning → review → implementation → review) across configured agent roles
 - Supports multiple providers through adapter plugins:
   - Codex (`codex`)
-  - Claude (`claude`)
-  - Grok (`grok`)
+  - Claude Code (`claude`)
+  - Grok Build (`grok`)
   - Generic CLI adapters (`generic`)
 - Persists complete run artifacts: prompts, raw output, parsed output, metadata, state transitions, and event log
 - Can be resumed after interruption using persisted state
 - Enforces basic repository safety and read-only behavior checks
+- Configurable models (e.g. `gpt-5.5`, `opus-4.8`) and reasoning levels
 
 ## What it does not do
 
-- Does not expose a web UI, full-screen TUI, database, broker, or cloud service
-- Does not replace provider-specific UIs or authentication flows
-- Does not require API keys directly (it delegates auth to local provider CLIs)
-- Does not perform autonomous long-running loops beyond the configured workflow
+Stringbean is not particularly good at running small tasks consisting of a single shell command, due to the amount of overhead required in running all of the subagents.
+
+It also does not replace your model subscription or credentials.
 
 ## Architecture
 
@@ -59,6 +60,12 @@ From a checkout:
 
 ```bash
 python3 -m pip install .
+
+# Create local binaries and runtime so that it can run
+# even if the active Python is missing dependencies
+scripts/install-local-shims.sh
+
+
 stringbean --version
 sbx --help
 ```
@@ -67,13 +74,6 @@ For editable development:
 
 ```bash
 python3 -m pip install -e ".[dev]"
-```
-
-If you want the self-bootstrapping source wrapper that can create its own local runtime when the
-active Python is missing dependencies:
-
-```bash
-scripts/install-local-shims.sh
 ```
 
 ## Quick start (5 minutes)
@@ -537,3 +537,7 @@ Each run gets `.stringbean/runs/<run-id>/` with:
 - No built-in cloud backend, no DB, no broker
 - Resume relies on local state and artifacts; external artifact loss prevents perfect resumption
 - No direct dependency on provider-specific streaming APIs (subprocess stdin plus stdout/stderr capture)
+
+## License
+
+This project is licensed under the MIT License. See `LICENSE` for details.

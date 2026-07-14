@@ -13,6 +13,8 @@ Include:
 - affected version / commit
 - any potentially exposed files or secrets
 
+Please report security issues to ali@zenulabidin.com.
+
 ## Security expectations
 
 - Do not hardcode credentials in config files.

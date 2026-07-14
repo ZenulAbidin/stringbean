@@ -49,7 +49,7 @@ def test_cli_help_available():
 def test_cli_version_available():
     result = runner.invoke(cli.app, ["--version"])
     assert result.exit_code == 0
-    assert "stringbean 0.2.0" in result.stdout
+    assert "stringbean 0.1.0" in result.stdout
 
 
 def test_run_help_lists_agent_stream_switch():
@@ -347,6 +347,52 @@ def test_plugin_skills_treat_host_timeouts_as_polling_boundaries():
         assert "explicit user-approved" in text
         assert "1,800 seconds" not in text
         assert "3,600 seconds" not in text
+
+
+def test_plugin_skills_treat_hosted_provider_processing_as_part_of_sbx():
+    repo = Path(__file__).resolve().parents[1]
+    skill_paths = (
+        repo / "plugins" / "stringbean" / "skills" / "sbx" / "SKILL.md",
+        repo / "plugins" / "claude-stringbean" / "skills" / "sbx" / "SKILL.md",
+        repo / "plugins" / "grok-stringbean" / "skills" / "sbx" / "SKILL.md",
+        repo / "codex-prompts" / "sbx.md",
+    )
+
+    for path in skill_paths:
+        text = path.read_text(encoding="utf-8")
+        normalized = " ".join(text.split())
+        assert "ordinary remote processing" in normalized
+        assert (
+            "do not ask for separate confirmation merely because provider execution is non-local"
+            in normalized
+        )
+        assert "continue without asking the user for access" in normalized
+        assert "Never weaken or bypass the exclusions" in normalized
+
+
+def test_codex_guidance_retries_runtime_sandbox_failure_without_privacy_reprompt():
+    repo = Path(__file__).resolve().parents[1]
+    guidance_paths = (
+        repo / "plugins" / "stringbean" / "skills" / "sbx" / "SKILL.md",
+        repo / "codex-prompts" / "sbx.md",
+    )
+
+    for path in guidance_paths:
+        text = path.read_text(encoding="utf-8")
+        normalized = " ".join(text.split())
+        assert "read-only filesystem error" in normalized
+        assert "failed to initialize in-process app-server client" in normalized
+        assert "launch the same `sbx` command" in normalized
+        assert "immediately retry that same command" in normalized
+        assert "host's standard escalation mechanism" in normalized
+        assert "`could not create PATH aliases` by itself is nonfatal" in normalized
+        assert "trigger its tool dialog directly" in normalized
+        assert "Do not end with a provisional provider-sharing question" in normalized
+        assert (
+            "Do not add `--ignore-sandbox-warnings`, change `--ro`/`--rw`, or weaken excluded-path "
+            "safeguards"
+            in normalized
+        )
 
 
 def test_claude_skill_uses_monitor_for_line_by_line_progress():

@@ -10,7 +10,12 @@ import pytest
 from agent_relay.config import RepositoryConfig
 from agent_relay.context import collect_repo_context, read_text_if_present
 from agent_relay.exclusions import RepositoryExclusions
-from agent_relay.policy import POLICY_PRELOAD_NAME, install_command_policy_wrappers, internal_subprocess_env
+from agent_relay.policy import (
+    POLICY_PRELOAD_NAME,
+    install_command_policy_wrappers,
+    internal_subprocess_env,
+    policy_prompt,
+)
 
 
 def test_repository_defaults_to_directory_mode_with_sensitive_boundaries():
@@ -19,6 +24,25 @@ def test_repository_defaults_to_directory_mode_with_sensitive_boundaries():
     assert config.require_git is False
     assert config.exclude_nested_repositories is True
     assert config.excluded_paths == []
+
+
+def test_policy_prompt_continues_without_sensitive_path_or_provider_consent_pause(tmp_path: Path):
+    text = policy_prompt(
+        "ro",
+        "read_only",
+        workspace_root=tmp_path,
+        excluded_paths=(".env*", "credentials/**"),
+    )
+
+    normalized = " ".join(text.split())
+    assert "Ordinary remote processing" in normalized
+    assert "do not pause for separate provider-use approval" in normalized
+    assert "skip it and continue with the rest of the task" in normalized
+    assert (
+        "Do not retry access, ask the user for permission to inspect it, or ask another agent to "
+        "inspect it"
+        in normalized
+    )
 
 
 def test_exclusions_protect_secrets_and_nested_repositories_without_hiding_templates(tmp_path: Path):

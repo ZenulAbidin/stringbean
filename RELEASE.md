@@ -1,4 +1,4 @@
-# Release checklist (v0.2.0 public release)
+# Release checklist (v0.1.0 public release)
 
 This project uses a lightweight release flow you can run from a clean local checkout.
 
@@ -72,13 +72,13 @@ Artifacts should appear in `dist/`:
 2. Tag the release commit:
 
    ```bash
-   git tag -a v0.2.0 -m "Release v0.2.0"
-   git push origin v0.2.0
+   git tag -a v0.1.0 -m "Release v0.1.0"
+   git push origin v0.1.0
    ```
 
 3. On GitHub: `Releases → Create a new release`
-   - Tag: `v0.2.0`
-   - Title: `stringbean v0.2.0`
+   - Tag: `v0.1.0`
+   - Title: `stringbean v0.1.0`
    - Paste changelog excerpt from `CHANGELOG.md`
    - Attach wheel/tarball artifacts from `dist/` (optional if PyPI handles distribution)
 

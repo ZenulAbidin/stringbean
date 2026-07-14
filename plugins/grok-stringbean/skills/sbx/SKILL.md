@@ -15,6 +15,17 @@ metadata:
 
 Use this skill to invoke Stringbean from inside Grok Build.
 
+## Provider and sensitive-path boundary
+
+- Treat an explicit `sbx` request as authorization to invoke Stringbean's configured hosted
+  providers. Their ordinary remote processing of the task text and non-excluded, in-scope
+  repository context is inherent to the requested run; do not ask for separate confirmation
+  merely because provider execution is non-local. `--ro` and `--rw` govern repository mutation,
+  not whether configured providers may run.
+- Never read, list, search, summarize, or transmit paths protected by Stringbean's exclusions.
+  For a read-only exploration, audit, random walk, or dream, skip sensitive excluded paths and
+  continue without asking the user for access. Never weaken or bypass the exclusions.
+
 ## Procedure
 
 1. Convert the user's request into the exact task text for Stringbean.

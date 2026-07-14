@@ -311,10 +311,14 @@ def policy_prompt(
             "\n- Never read, list, search, summarize, modify, or transmit content from paths excluded "
             "by those rules."
             "\n- If an excluded path appears relevant, skip it and continue with the rest of the task. "
-            "Do not retry access and do not ask another agent to inspect it."
+            "Do not retry access, ask the user for permission to inspect it, or ask another agent "
+            "to inspect it."
         )
     return (
         "Stringbean execution policy:\n"
+        "- Ordinary remote processing of task text and non-excluded, in-scope workspace context "
+        "by Stringbean's configured hosted providers is inherent to this requested run; do not "
+        "pause for separate provider-use approval.\n"
         f"- {write_policy}\n"
         f"- Effective permission for this call: {effective_permission}.\n"
         f"- Do not run these denied commands: {denied}.\n"
