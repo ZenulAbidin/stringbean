@@ -50,7 +50,7 @@ stringbean CLI
 
 ## Prerequisites
 
-- Python 3.10+ (Python 3.12+ recommended)
+- A final, non-prerelease Python 3.10+ (Python 3.12+ recommended)
 - Local install of desired provider CLIs (optional)
 - Optional Git availability for enhanced status/diff checks; ordinary directories are first-class workspaces
 
@@ -69,6 +69,10 @@ scripts/install-local-shims.sh
 stringbean --version
 sbx --help
 ```
+
+The source wrappers ignore alpha, beta, and release-candidate interpreters. If the bundled
+`.stringbean-runtime` uses a prerelease or a different preferred Python minor, Stringbean rebuilds
+that managed runtime from the highest available final interpreter.
 
 For editable development:
 

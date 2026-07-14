@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Source wrappers reject prerelease Python interpreters and rebuild mismatched managed runtimes as
+  isolated, dependency-complete virtual environments using the highest available final Python 3.10+.
+
 ## [0.1.0] - 2026-07-13
 
 ### Added

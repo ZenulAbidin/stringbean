@@ -127,26 +127,94 @@ for module_name in required:
 PY
 }
 
+python_has_managed_deps() {
+  local py="$1"
+  "$py" - <<'PY' >/dev/null 2>&1
+import importlib
+from pathlib import Path
+import sys
+
+prefix = Path(sys.prefix).resolve()
+required = ("pydantic", "typer", "rich", "yaml")
+for module_name in required:
+    module = importlib.import_module(module_name)
+    module_file = getattr(module, "__file__", None)
+    if module_file is None:
+        raise SystemExit(1)
+    try:
+        Path(module_file).resolve().relative_to(prefix)
+    except ValueError:
+        raise SystemExit(1)
+PY
+}
+
+python_is_stable_supported() {
+  local py="$1"
+  "$py" - <<'PY' >/dev/null 2>&1
+import sys
+
+supported = sys.version_info[:2] >= (3, 10) and sys.version_info.releaselevel == "final"
+raise SystemExit(0 if supported else 1)
+PY
+}
+
+python_minor_version() {
+  local py="$1"
+  "$py" - <<'PY' 2>/dev/null
+import sys
+
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+}
+
+runtime_is_isolated() {
+  local runtime_dir="$1"
+  [[ -f "$runtime_dir/pyvenv.cfg" ]] &&
+    grep -Eq '^include-system-site-packages = false$' "$runtime_dir/pyvenv.cfg"
+}
+
 bootstrap_runtime_python() {
   local bootstrap_py="$1"
   local runtime_dir="$ROOT_DIR/.stringbean-runtime"
   local venv_py="$runtime_dir/bin/python"
+  local bootstrap_version
+  local runtime_version=""
+
+  bootstrap_version="$(python_minor_version "$bootstrap_py")" || return 1
 
   if [[ ! -x "$venv_py" ]]; then
-    "$bootstrap_py" -m venv --system-site-packages "$runtime_dir" >/dev/null 2>&1 || return 1
+    if ! "$bootstrap_py" -m venv "$runtime_dir" >/dev/null 2>&1; then
+      [[ -x "$venv_py" ]] || return 1
+    fi
+  else
+    runtime_version="$(python_minor_version "$venv_py" || true)"
+    if ! python_is_stable_supported "$venv_py" ||
+      [[ "$runtime_version" != "$bootstrap_version" ]] ||
+      ! runtime_is_isolated "$runtime_dir"; then
+      echo "Rebuilding bundled local runtime with stable Python $bootstrap_version." >&2
+      if ! "$bootstrap_py" -m venv --clear "$runtime_dir" >/dev/null 2>&1; then
+        [[ -x "$venv_py" ]] || return 1
+      fi
+    fi
   fi
 
-  if python_has_deps "$venv_py"; then
+  runtime_version="$(python_minor_version "$venv_py" || true)"
+  if ! python_is_stable_supported "$venv_py" ||
+    [[ "$runtime_version" != "$bootstrap_version" ]] ||
+    ! runtime_is_isolated "$runtime_dir"; then
+    return 1
+  fi
+
+  if python_has_managed_deps "$venv_py"; then
     printf '%s\n' "$venv_py"
     return 0
   fi
 
-  if "$venv_py" -m pip install --quiet --disable-pip-version-check --upgrade pip >/dev/null 2>&1; then
-    "$venv_py" -m pip install --quiet --disable-pip-version-check \
-      "pydantic>=2.7" "typer>=0.12" "rich>=13.7" "PyYAML>=6.0" >/dev/null 2>&1
-  fi
+  "$venv_py" -m pip install --quiet --disable-pip-version-check --upgrade pip >/dev/null 2>&1 || true
+  "$venv_py" -m pip install --quiet --disable-pip-version-check --upgrade \
+    "pydantic>=2.7" "typer>=0.12" "rich>=13.7" "PyYAML>=6.0" >/dev/null 2>&1 || true
 
-  if python_has_deps "$venv_py"; then
+  if python_has_managed_deps "$venv_py"; then
     printf '%s\n' "$venv_py"
     return 0
   fi
@@ -157,12 +225,13 @@ bootstrap_runtime_python() {
 resolve_python() {
   local fallback=""
   local fallback_path=""
+  local found_python=0
   local candidates=()
 
   if [[ -n "${STRINGBEAN_PYTHON-}" ]]; then
     candidates+=("${STRINGBEAN_PYTHON}")
   fi
-  candidates+=(python3.12 python3.11 python3.10 python3 python)
+  candidates+=(python3.14 python3.13 python3.12 python3.11 python3.10 python3 python)
 
   for py in "${candidates[@]}"; do
     if ! command -v "$py" >/dev/null 2>&1; then
@@ -172,6 +241,14 @@ resolve_python() {
     local py_path
     py_path="$(command -v "$py")"
     if [[ ! -x "$py_path" ]]; then
+      continue
+    fi
+
+    found_python=1
+    if ! python_is_stable_supported "$py_path"; then
+      if [[ -n "${STRINGBEAN_PYTHON-}" && "$py" == "${STRINGBEAN_PYTHON}" ]]; then
+        echo "Ignoring STRINGBEAN_PYTHON=$py_path: Stringbean requires a final Python 3.10 or newer." >&2
+      fi
       continue
     fi
 
@@ -203,6 +280,11 @@ resolve_python() {
     echo "Error: Python $fallback does not currently provide required packages (pydantic, typer, rich, PyYAML)."
     echo "Install them globally, or set STRINGBEAN_PYTHON to a Python with these deps."
     echo "Tip: STRINGBEAN_PYTHON=/usr/bin/python3.10 ./scripts/sbx ..."
+    return 1
+  fi
+
+  if [[ "$found_python" -eq 1 ]]; then
+    echo "Error: no final Python 3.10 or newer interpreter found."
     return 1
   fi
 

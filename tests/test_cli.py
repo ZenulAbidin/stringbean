@@ -28,6 +28,40 @@ def _strip_ansi_control_sequences(text: str) -> str:
     return _CONTROL_CHARACTER_RE.sub("", without_ansi)
 
 
+def _write_executable(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n" + body.lstrip(),
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def _fake_python_script(*, label: str, version: str, stable: bool, deps: bool) -> str:
+    stable_status = 0 if stable else 1
+    deps_status = 0 if deps else 1
+    return f'''\
+if [[ "${{1-}}" == "-" ]]; then
+  payload="$(cat)"
+  if [[ "$payload" == *"version_info.major"* ]]; then
+    printf '%s\\n' "{version}"
+    exit 0
+  fi
+  if [[ "$payload" == *"releaselevel"* ]]; then
+    exit {stable_status}
+  fi
+  if [[ "$payload" == *"required ="* ]]; then
+    exit {deps_status}
+  fi
+fi
+if [[ "${{1-}}" == "-c" ]]; then
+  printf '%s\\n' "{label}" > "${{STRINGBEAN_TEST_SELECTED:?}}"
+  exit 0
+fi
+exit 1
+'''
+
+
 def _write_placeholder_config(root: Path) -> None:
     config = cli.Config(
         agents={
@@ -99,6 +133,164 @@ def test_sbx_accepts_unquoted_prompt_words():
     assert "enumerate-bugs" in result.stdout
     assert "'dry_run': True" in result.stdout
     assert "'execution_profile': 'rw'" in result.stdout
+
+
+def test_sbx_script_skips_prerelease_python_override(tmp_path: Path):
+    repo = Path(__file__).resolve().parents[1]
+    fake_bin = tmp_path / "bin"
+    selected = tmp_path / "selected-python.txt"
+    prerelease = fake_bin / "python3.14"
+    stable = fake_bin / "python3.13"
+    _write_executable(
+        prerelease,
+        _fake_python_script(
+            label="prerelease-3.14",
+            version="3.14",
+            stable=False,
+            deps=True,
+        ),
+    )
+    _write_executable(
+        stable,
+        _fake_python_script(
+            label="stable-3.13",
+            version="3.13",
+            stable=True,
+            deps=True,
+        ),
+    )
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["STRINGBEAN_PYTHON"] = str(prerelease)
+    env["STRINGBEAN_TEST_SELECTED"] = str(selected)
+
+    result = subprocess.run(
+        [str(repo / "scripts" / "sbx"), "runtime", "probe"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert selected.read_text(encoding="utf-8") == "stable-3.13\n"
+    assert "requires a final Python 3.10 or newer" in result.stderr
+
+
+def test_sbx_script_rebuilds_prerelease_managed_runtime(tmp_path: Path):
+    source_repo = Path(__file__).resolve().parents[1]
+    repo = tmp_path / "repo"
+    (repo / "src" / "agent_relay").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname = 'probe'\n", encoding="utf-8")
+    (repo / "README.md").write_text("probe\n", encoding="utf-8")
+    wrapper = repo / "scripts" / "sbx"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        (source_repo / "scripts" / "sbx").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+
+    selected = tmp_path / "selected-python.txt"
+    rebuilt = tmp_path / "runtime-rebuilt.txt"
+    stale_runtime = repo / ".stringbean-runtime" / "bin" / "python"
+    _write_executable(
+        stale_runtime,
+        _fake_python_script(
+            label="stale-3.11-rc",
+            version="3.11",
+            stable=False,
+            deps=True,
+        ),
+    )
+
+    fake_bin = tmp_path / "bin"
+    stable_bootstrap = fake_bin / "python3.14"
+    _write_executable(
+        stable_bootstrap,
+        r'''
+if [[ "${1-}" == "-" ]]; then
+  payload="$(cat)"
+  if [[ "$payload" == *"version_info.major"* ]]; then
+    printf '3.14\n'
+    exit 0
+  fi
+  if [[ "$payload" == *"releaselevel"* ]]; then
+    exit 0
+  fi
+  if [[ "$payload" == *"required ="* ]]; then
+    exit 1
+  fi
+fi
+if [[ "${1-}" == "-m" && "${2-}" == "venv" ]]; then
+  [[ " $* " == *" --clear "* ]] || exit 22
+  runtime_dir="${@: -1}"
+  mkdir -p "$runtime_dir/bin"
+  printf 'include-system-site-packages = false\n' > "$runtime_dir/pyvenv.cfg"
+  cat > "$runtime_dir/bin/python" <<'PYTHON'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1-}" == "-" ]]; then
+  payload="$(cat)"
+  if [[ "$payload" == *"version_info.major"* ]]; then
+    printf '3.14\n'
+    exit 0
+  fi
+  if [[ "$payload" == *"releaselevel"* || "$payload" == *"required ="* ]]; then
+    exit 0
+  fi
+fi
+if [[ "${1-}" == "-c" ]]; then
+  printf 'managed-3.14\n' > "${STRINGBEAN_TEST_SELECTED:?}"
+  exit 0
+fi
+if [[ "${1-}" == "-m" && "${2-}" == "pip" ]]; then
+  exit 0
+fi
+exit 1
+PYTHON
+  chmod +x "$runtime_dir/bin/python"
+  printf 'rebuilt\n' > "${STRINGBEAN_TEST_REBUILT:?}"
+  exit 0
+fi
+exit 1
+''',
+    )
+    unsupported = _fake_python_script(
+        label="unsupported",
+        version="3.11",
+        stable=False,
+        deps=False,
+    )
+    for name in (
+        "python3.13",
+        "python3.12",
+        "python3.11",
+        "python3.10",
+        "python3",
+        "python",
+    ):
+        _write_executable(fake_bin / name, unsupported)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["STRINGBEAN_TEST_SELECTED"] = str(selected)
+    env["STRINGBEAN_TEST_REBUILT"] = str(rebuilt)
+    result = subprocess.run(
+        [str(wrapper), "runtime", "probe"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert rebuilt.read_text(encoding="utf-8") == "rebuilt\n"
+    assert selected.read_text(encoding="utf-8") == "managed-3.14\n"
+    assert "Rebuilding bundled local runtime with stable Python 3.14." in result.stderr
+    assert "Using bundled local runtime:" in result.stderr
 
 
 def test_installed_sbx_entrypoint_accepts_unquoted_prompt_words(monkeypatch):
