@@ -10,7 +10,7 @@ Current release: `0.1.0`.
 
 ## What this project does
 
-Stringbean is excellent for running complex tasks which require long durations. Each invocation runs several advisor and orchestrator agents while auto-selecting the most efficient model with a reasonable quota. This way, you can avoid running your entire session in Fable or Sol and burning through your usage limit.
+Stringbean is excellent for running complex tasks which require long durations. Each invocation runs several advisor and orchestrator agents while auto-selecting the most efficient model with a reasonable quota. This way, you can avoid running your entire session in Fable or Sol and burning through your usage limit. It is also great for turning terse instructions into specific, actionable plans.
 
 - Runs an MCP-style workflow (planning → review → implementation → review) across configured agent roles
 - Supports multiple providers through adapter plugins:
