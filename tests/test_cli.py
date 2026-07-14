@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -14,6 +15,17 @@ from agent_relay.state import create_new_run
 
 
 runner = CliRunner()
+
+
+_ANSI_CONTROL_SEQUENCE_RE = re.compile(
+    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
+)
+_CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _strip_ansi_control_sequences(text: str) -> str:
+    without_ansi = _ANSI_CONTROL_SEQUENCE_RE.sub("", text)
+    return _CONTROL_CHARACTER_RE.sub("", without_ansi)
 
 
 def _write_placeholder_config(root: Path) -> None:
@@ -42,8 +54,10 @@ def _write_placeholder_config(root: Path) -> None:
 def test_cli_help_available():
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
-    assert "stringbean" in result.stdout
-    assert "agent" + "-relay" not in result.stdout
+    help_text = _strip_ansi_control_sequences(result.stdout)
+
+    assert "stringbean" in help_text
+    assert "agent" + "-relay" not in help_text
 
 
 def test_cli_version_available():
@@ -55,14 +69,21 @@ def test_cli_version_available():
 def test_run_help_lists_agent_stream_switch():
     result = runner.invoke(cli.app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "--no-agent-stream" in result.stdout
-    assert "--codex-final" in result.stdout
-    assert "--codex-progress" in result.stdout
-    assert "heartbeat lines" in result.stdout
-    assert "--policy-retries" in result.stdout
-    assert "--rw" in result.stdout
-    assert "--ro" in result.stdout
-    assert "[default: rw]" in result.stdout
+    help_text = _strip_ansi_control_sequences(result.stdout)
+
+    assert "--no-agent-stream" in help_text
+    agent_stream_help = help_text[help_text.index("--no-agent-stream") :]
+    agent_stream_help = agent_stream_help[: agent_stream_help.index("--codex-final")]
+    assert "Hide live provider" in agent_stream_help
+    assert "agent" in agent_stream_help
+    assert "stdout/stderr" in agent_stream_help
+    assert "--codex-final" in help_text
+    assert "--codex-progress" in help_text
+    assert "heartbeat lines" in help_text
+    assert "--policy-retries" in help_text
+    assert "--rw" in help_text
+    assert "--ro" in help_text
+    assert "[default: rw]" in help_text
 
 
 def test_sbx_accepts_unquoted_prompt_words():
@@ -123,7 +144,8 @@ def test_installed_sbx_entrypoint_help_exits_cleanly(monkeypatch, capsys):
         cli.sbx_main()
 
     assert exc.value.code == 0
-    assert "Usage:" in capsys.readouterr().out
+    help_text = _strip_ansi_control_sequences(capsys.readouterr().out)
+    assert "Usage:" in help_text
 
 
 def test_sbx_script_targets_non_git_invocation_directory_not_stringbean_source(tmp_path: Path):

@@ -16,7 +16,7 @@ Thanks for checking this out. stringbean is intentionally small and practical, s
 python -m pip install -e ".[dev]"
 ```
 
-Python 3.10, 3.11, and 3.12 are tested in CI.
+Python 3.10 through 3.14 are tested in CI.
 
 Run the local CLI from the checkout with either the installed console scripts or the source wrappers:
 
