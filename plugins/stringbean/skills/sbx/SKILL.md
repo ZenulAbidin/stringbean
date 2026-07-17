@@ -9,59 +9,49 @@ Use this skill to invoke Stringbean from inside Codex.
 
 ## Provider and sensitive-path boundary
 
-- Treat an explicit `sbx` request as authorization to invoke Stringbean's configured hosted
-  providers. Their ordinary remote processing of the task text and non-excluded, in-scope
-  repository context is inherent to the requested run; do not ask for separate confirmation
-  merely because provider execution is non-local. `--ro` and `--rw` govern repository mutation,
-  not whether configured providers may run.
+- Treat an explicit `$sbx` or `stringbean:sbx` invocation as authorization to invoke Stringbean's
+  configured hosted providers. Their ordinary remote processing of the task text and non-excluded,
+  in-scope repository context is inherent to the requested run; do not ask for separate
+  confirmation merely because provider execution is non-local. `--ro` and `--rw` govern repository
+  mutation, not whether configured providers may run.
+- Do not call `start_sbx` for an incidental mention of Stringbean or `sbx`. Proceed only when the
+  current user request explicitly invokes `$sbx` / `stringbean:sbx` or directly asks you to run
+  Stringbean. This instruction-level gate keeps the established unqualified `$sbx` spelling
+  discoverable even though plugin skills are namespaced by Codex.
 - Never read, list, search, summarize, or transmit paths protected by Stringbean's exclusions.
   For a read-only exploration, audit, random walk, or dream, skip sensitive excluded paths and
   continue without asking the user for access. Never weaken or bypass the exclusions.
-- When the host sandbox makes provider runtime state such as `$CODEX_HOME` read-only, launch the
-  same `sbx` command through the host's standard escalation mechanism from the outset. If a normal
-  launch instead fails before an agent starts with a read-only filesystem error or
-  `failed to initialize in-process app-server client`, immediately retry that same command through
-  the mechanism, preserving the requested Stringbean profile and task. The warning
-  `could not create PATH aliases` by itself is nonfatal; keep the run alive unless provider startup
-  actually fails. If the host mechanically requires approval, trigger its tool dialog directly and
-  describe it as provider runtime-state and subprocess startup access, not as a new privacy or
-  data-sharing decision. Do not end with a provisional provider-sharing question in place of the
-  run. Do not add `--ignore-sandbox-warnings`, change `--ro`/`--rw`, or weaken excluded-path
-  safeguards.
+
+## Trusted Codex plugin tools
+
+- Use only the Stringbean plugin's `start_sbx` and `poll_sbx` tools. `start_sbx` is the narrowly
+  pre-approved provider-launch boundary for an explicit invocation of this skill; it runs the
+  plugin's bundled versioned Stringbean snapshot and binds the run to Codex's current sandbox workspace.
+- Do not invoke `sbx` through a shell, request host escalation, or ask for a second provider-transfer
+  approval. The user's explicit invocation already authorizes ordinary processing by configured
+  providers, while Stringbean continues to enforce excluded paths.
+- If these tools are unavailable, report that the Codex plugin installation is incomplete and name
+  `scripts/install-codex-plugin.sh` as the repair command. Do not fall back to a shell launcher.
 
 ## Behavior
 
-1. Convert the user's request into the exact task text for Stringbean.
-2. Run Stringbean with full plugin output enabled:
-
-```bash
-sbx "<task and flags>" --plugin-full-output
-```
-
-If the current working directory is the Stringbean repository and the repo-local wrapper exists,
-this equivalent command is also acceptable:
-
-```bash
-plugins/stringbean/scripts/sbx-codex "<task and flags>"
-```
-
-3. Preserve user-specified Stringbean flags such as `--rw`, `--ro`, `--mode auto`,
-   `--mode low`, `--mode medium`, and `--mode high`.
-4. Do not add a permissions flag unless the user asks for one. Stringbean's default profile is
-   `rw`; use `--ro` only when the user explicitly asks for create-only/read-only behavior.
-5. Show useful live Stringbean output while the command runs. Lines beginning with
+1. Convert the user's request into the exact `task` text for Stringbean. Keep flags out of that text.
+2. Call `start_sbx` exactly once. Map user flags to its typed arguments: `execution_profile`, `mode`,
+   `dry_run`, `no_advisor`, `max_review_rounds`, and `policy_retries`. Do not add an execution profile
+   unless the user requests one; the tool and Stringbean both default to `rw`.
+3. Repeatedly call `poll_sbx` with the returned `run_id` and latest `cursor`, normally waiting five
+   seconds per call. Continue until all output is drained and status is `completed`, `failed`, or
+   `cancelled`. A finite tool timeout is a polling boundary, never permission to abandon the run.
+4. Show useful live Stringbean output while the run is active. Lines beginning with
    `STRINGBEAN_INTERMEDIATE:` are progress/status lines only, not final output.
-   Use the host's longest non-destructive wait or a persistent terminal session. Treat every
-   finite host timeout as a polling boundary, never permission to kill the workflow. If the terminal yields a running
-   session, poll it every 5-10 seconds and continue across as many bounded waits as necessary.
    Do not terminate while fresh Stringbean heartbeat or agent-output lines continue to arrive.
    Multi-hour implementation calls are valid. Stop only after a confirmed process failure or an
    explicit user-approved interruption.
-6. If Stringbean emits `STRINGBEAN_INTERMEDIATE: Watchdog: approval required`, keep that exact
-   terminal session alive and ask the user whether to stop it. The watchdog line is a warning, not
-   termination authorization. Interrupt that session only after an unambiguous yes; otherwise keep
-   polling. If the host cannot preserve the process while asking, default to continuing it.
-7. After the command finishes, find the final block between:
+5. If Stringbean emits `STRINGBEAN_INTERMEDIATE: Watchdog: approval required`, keep polling and ask
+   the user whether to stop that run. The warning is not termination authorization. Call
+   `cancel_sbx` for that `run_id` with `confirmed_by_user: true` only after an unambiguous yes;
+   otherwise continue polling.
+6. After the run finishes, find the final block between:
 
 ```text
 STRINGBEAN_FINAL_START
@@ -75,7 +65,7 @@ STRINGBEAN_RESULT_START
 STRINGBEAN_RESULT_END
 ```
 
-8. The visible final answer must report the useful fields from that block, especially:
+7. The visible final answer must report the useful fields from that block, especially:
    `Status`, `Result`, `Tasks`, `Review rounds`, and `Artifacts`.
 
 ## During the run

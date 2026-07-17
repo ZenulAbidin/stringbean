@@ -17,22 +17,6 @@ else
 fi
 
 ARGS=("$@")
-if [[ "$#" -eq 1 && "$1" == *" --"* ]]; then
-  PYTHON_BIN="$(command -v python3 || command -v python || true)"
-  if [[ -n "$PYTHON_BIN" ]]; then
-    SPLIT_ARGS=()
-    while IFS= read -r -d '' token; do
-      SPLIT_ARGS+=("$token")
-    done < <(
-      "$PYTHON_BIN" -c \
-        'import shlex, sys; [sys.stdout.write(part + "\0") for part in shlex.split(sys.argv[1])]' \
-        "$1" 2>/dev/null
-    )
-    if [[ "${#SPLIT_ARGS[@]}" -gt 0 ]]; then
-      ARGS=("${SPLIT_ARGS[@]}")
-    fi
-  fi
-fi
 HAS_OUTPUT_MODE=false
 HAS_PROGRESS_INTERVAL=false
 

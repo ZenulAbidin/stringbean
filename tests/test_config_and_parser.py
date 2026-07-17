@@ -261,7 +261,7 @@ def test_claude_adapter_uses_noninteractive_stream_json(tmp_path: Path):
     assert not adapter.supports_prompt_transport("file")
 
 
-def test_claude_adapter_normalizes_legacy_configured_model_when_command_is_implicit(tmp_path: Path):
+def test_claude_adapter_passes_through_native_full_model_name_when_command_is_implicit(tmp_path: Path):
     from agent_relay.adapters import ClaudeAdapter
 
     cfg = AgentConfig(
@@ -278,7 +278,7 @@ def test_claude_adapter_normalizes_legacy_configured_model_when_command_is_impli
     assert adapter.build_command("prompt", tmp_path) == [
         "claude",
         "--model",
-        "sonnet",
+        "claude-fable-5",
         "--print",
         "--output-format",
         "stream-json",
@@ -289,9 +289,7 @@ def test_claude_adapter_normalizes_legacy_configured_model_when_command_is_impli
 @pytest.mark.parametrize(
     ("legacy_model", "supported_alias"),
     [
-        ("claude-opus-4-8", "opus"),
-        ("claude-sonnet-5", "sonnet"),
-        ("claude-fable-5", "sonnet"),
+        ("opus-4.8", "opus"),
     ],
 )
 def test_claude_adapter_repairs_legacy_model_in_explicit_command(
@@ -315,6 +313,28 @@ def test_claude_adapter_repairs_legacy_model_in_explicit_command(
 
     assert command[:3] == ["claude", "--model", supported_alias]
     assert legacy_model not in command
+
+
+@pytest.mark.parametrize(
+    "full_model",
+    ["fable", "claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+)
+def test_claude_adapter_passes_real_full_model_names_through_unchanged(tmp_path: Path, full_model: str):
+    from agent_relay.adapters import ClaudeAdapter
+
+    cfg = AgentConfig(
+        name="explicit-claude",
+        adapter="claude",
+        model=full_model,
+        role="advisor",
+        permissions="read_only",
+        command=["claude", "--model", full_model],
+        prompt_transport="stdin",
+    )
+
+    command = ClaudeAdapter(cfg).build_command("prompt", tmp_path)
+
+    assert command[:3] == ["claude", "--model", full_model]
 
 
 def test_claude_adapter_normalizes_final_stream_result_for_parser(tmp_path: Path):

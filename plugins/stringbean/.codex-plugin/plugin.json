@@ -1,6 +1,6 @@
 {
   "name": "stringbean",
-  "version": "0.1.0+codex.20260714022755",
+  "version": "0.2.0+codex.20260717092622",
   "description": "Use Stringbean's sbx orchestrator from inside Codex.",
   "author": {
     "name": "Stringbean"
@@ -14,10 +14,11 @@
     "agents"
   ],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Stringbean",
     "shortDescription": "Run sbx orchestration inside Codex.",
-    "longDescription": "Adds a Codex skill for invoking Stringbean's sbx orchestrator with compact final-result handling so Codex can delegate a task to Stringbean and report the visible result without raw transcripts or provider logs.",
+    "longDescription": "Adds an explicit-only Codex skill and typed local tools for starting a versioned Stringbean sbx runtime, polling visible progress, and reporting the final sentinel result without model-issued shell escalation.",
     "developerName": "Stringbean",
     "category": "Productivity",
     "capabilities": [

@@ -2,8 +2,39 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-17
+
+### Added
+
+- `gpt-5.6` `terra` and `luna` model variants are now available alongside `sol`, as `gpt56-terra-*` and
+  `gpt56-luna-*` orchestrator/advisor/reviewer agents.
+- Explicit pinned-model Claude agents (`claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`,
+  `claude-fable-5`) are now available alongside the existing stable-alias agents (`claude-opus`,
+  `claude-sonnet`, `claude-haiku`, `claude-fable`), so configs can choose portability or a pinned model.
+- Preset D now includes a `claude-fable` agent; Fable 5 was previously entirely absent from the preset's
+  agent catalog.
+
 ### Fixed
 
+- `gpt56-*` Codex orchestrator/advisor/reviewer agents now request the `gpt-5.6-sol` model instead of the
+  bare `gpt-5.6`, which Codex rejects under a ChatGPT-account login ("The 'gpt-5.6' model is not supported
+  when using Codex with a ChatGPT account").
+- The Claude adapter's legacy-model repair table no longer reroutes `fable` / `claude-fable-5` requests to
+  `sonnet`; Fable 5 agents now actually invoke Fable 5 instead of silently running Sonnet 5. It also no
+  longer rewrites the real model ids `claude-opus-4-8` and `claude-sonnet-5` down to their generic aliases,
+  since the Claude Code CLI accepts full model names natively; only the malformed legacy string `opus-4.8`
+  is still repaired.
+- Explicit Codex `$sbx` runs now use a bundled, versioned local plugin tool instead of an escalated shell
+  command, avoiding the over-broad provider-transfer Auto-review denial. The tool is workspace- and
+  thread-bound, accepts only typed options, returns compact sanitized progress, and leaves
+  polling/cancellation under normal policy. Codex keeps the skill model-visible so the established
+  unqualified `$sbx` spelling resolves across repositories, while the skill instructions retain an
+  explicit-request gate around the provider-launch tool.
+- Built-in credential exclusions can no longer be negated by `.stringbeanignore` or configured
+  project rules. Claude and Grok provider-transfer skills remain explicit-only at the host metadata
+  layer; Codex enforces the same intent in the skill and tool descriptions so `$sbx` stays discoverable.
+- Claude's plugin wrapper now preserves literal flag-like text inside the task argument instead of
+  reclassifying it as Stringbean options; task text and flags remain separate argv entries.
 - Source wrappers reject prerelease Python interpreters and rebuild mismatched managed runtimes as
   isolated, dependency-complete virtual environments using the highest available final Python 3.10+.
 

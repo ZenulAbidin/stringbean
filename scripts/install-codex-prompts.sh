@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROMPT_DIR="${CODEX_HOME:-$HOME/.codex}/prompts"
 
+"$ROOT_DIR/scripts/install-codex-plugin.sh"
+
 mkdir -p "$PROMPT_DIR"
 install -m 644 "$ROOT_DIR/codex-prompts/sbx.md" "$PROMPT_DIR/sbx.md"
 

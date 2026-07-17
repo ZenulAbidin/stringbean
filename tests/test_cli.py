@@ -97,7 +97,7 @@ def test_cli_help_available():
 def test_cli_version_available():
     result = runner.invoke(cli.app, ["--version"])
     assert result.exit_code == 0
-    assert "stringbean 0.1.0" in result.stdout
+    assert "stringbean 0.2.0" in result.stdout
 
 
 def test_run_help_lists_agent_stream_switch():
@@ -584,7 +584,7 @@ def test_plugin_skills_treat_hosted_provider_processing_as_part_of_sbx():
         assert "Never weaken or bypass the exclusions" in normalized
 
 
-def test_codex_guidance_retries_runtime_sandbox_failure_without_privacy_reprompt():
+def test_codex_guidance_uses_plugin_tools_without_shell_escalation_or_privacy_reprompt():
     repo = Path(__file__).resolve().parents[1]
     guidance_paths = (
         repo / "plugins" / "stringbean" / "skills" / "sbx" / "SKILL.md",
@@ -594,19 +594,38 @@ def test_codex_guidance_retries_runtime_sandbox_failure_without_privacy_reprompt
     for path in guidance_paths:
         text = path.read_text(encoding="utf-8")
         normalized = " ".join(text.split())
-        assert "read-only filesystem error" in normalized
-        assert "failed to initialize in-process app-server client" in normalized
-        assert "launch the same `sbx` command" in normalized
-        assert "immediately retry that same command" in normalized
-        assert "host's standard escalation mechanism" in normalized
-        assert "`could not create PATH aliases` by itself is nonfatal" in normalized
-        assert "trigger its tool dialog directly" in normalized
-        assert "Do not end with a provisional provider-sharing question" in normalized
-        assert (
-            "Do not add `--ignore-sandbox-warnings`, change `--ro`/`--rw`, or weaken excluded-path "
-            "safeguards"
-            in normalized
-        )
+        assert "`start_sbx`" in normalized
+        assert "`poll_sbx`" in normalized
+        assert "bundled versioned Stringbean" in normalized
+        assert "Do not invoke `sbx` through a shell" in normalized
+        assert "request host escalation" in normalized
+        assert "second provider-transfer" in normalized
+        assert "command -v sbx-codex" not in normalized
+        assert "host's standard escalation mechanism" not in normalized
+        assert "failed to initialize in-process app-server client" not in normalized
+
+
+def test_provider_transfer_skills_require_an_explicit_request_on_every_host():
+    repo = Path(__file__).resolve().parents[1]
+    codex_metadata = (
+        repo / "plugins" / "stringbean" / "skills" / "sbx" / "agents" / "openai.yaml"
+    ).read_text(encoding="utf-8")
+    codex_skill = (
+        repo / "plugins" / "stringbean" / "skills" / "sbx" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    claude_skill = (
+        repo / "plugins" / "claude-stringbean" / "skills" / "sbx" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    grok_skill = (
+        repo / "plugins" / "grok-stringbean" / "skills" / "sbx" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "allow_implicit_invocation: false" not in codex_metadata
+    assert "Do not call `start_sbx` for an incidental mention" in codex_skill
+    for text in (claude_skill, grok_skill):
+        frontmatter = text.split("---", 2)[1]
+        assert "user-invocable: true" in frontmatter
+        assert "disable-model-invocation: true" in frontmatter
 
 
 def test_claude_skill_uses_monitor_for_line_by_line_progress():
@@ -623,7 +642,7 @@ def test_claude_skill_uses_monitor_for_line_by_line_progress():
     assert "Do not use `Monitor`" not in text
 
 
-def test_claude_wrapper_separates_flags_from_single_argument(tmp_path: Path):
+def test_claude_wrapper_preserves_literal_task_and_separate_flags(tmp_path: Path):
     repo = Path(__file__).resolve().parents[1]
     fake_sbx = tmp_path / "fake-sbx"
     fake_sbx.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
@@ -632,7 +651,10 @@ def test_claude_wrapper_separates_flags_from_single_argument(tmp_path: Path):
     result = subprocess.run(
         [
             str(repo / "plugins" / "claude-stringbean" / "scripts" / "sbx-claude"),
-            "plugin integration smoke --dry-run --mode low",
+            "audit literal --mode high text",
+            "--dry-run",
+            "--mode",
+            "low",
         ],
         cwd=repo,
         env={**os.environ, "STRINGBEAN_SBX": str(fake_sbx)},
@@ -643,7 +665,7 @@ def test_claude_wrapper_separates_flags_from_single_argument(tmp_path: Path):
 
     args = result.stdout.splitlines()
     assert result.returncode == 0, result.stderr
-    assert args[:6] == ["plugin", "integration", "smoke", "--dry-run", "--mode", "low"]
+    assert args[:4] == ["audit literal --mode high text", "--dry-run", "--mode", "low"]
     assert "--plugin-compact-output" in args
 
 

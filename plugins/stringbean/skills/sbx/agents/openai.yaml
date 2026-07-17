@@ -1,0 +1,10 @@
+interface:
+  display_name: "Stringbean sbx"
+  short_description: "Run explicit Stringbean orchestration"
+  default_prompt: "Use $sbx to delegate this task through Stringbean."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "stringbean"
+      description: "Pinned local Stringbean launch and polling tools"

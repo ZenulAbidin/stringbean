@@ -28,19 +28,20 @@ Use this skill to invoke Stringbean from inside Grok Build.
 
 ## Procedure
 
-1. Convert the user's request into the exact task text for Stringbean.
+1. Separate the user's request into exact task text and Stringbean flags. Pass the task as one
+   quoted argument and each flag as its own argument; never quote task text and flags together.
 2. Preserve user-specified Stringbean flags such as `--rw`, `--ro`, `--mode auto`,
    `--mode low`, `--mode medium`, and `--mode high`.
 3. Run the plugin wrapper:
 
 ```bash
-plugins/grok-stringbean/scripts/sbx-grok "<task and flags>"
+plugins/grok-stringbean/scripts/sbx-grok "<task text>" <flags>
 ```
 
 If the current working directory is not the Stringbean source checkout, run the installed command:
 
 ```bash
-sbx "<task and flags>" --plugin-full-output
+sbx "<task text>" <flags> --plugin-full-output
 ```
 
 4. Show useful live Stringbean output while the command runs. Lines beginning with

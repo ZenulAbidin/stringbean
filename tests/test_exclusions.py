@@ -71,6 +71,47 @@ def test_exclusions_protect_secrets_and_nested_repositories_without_hiding_templ
     }
 
 
+@pytest.mark.parametrize("source", ["ignore_file", "configured"])
+def test_project_negations_cannot_reopen_mandatory_credential_exclusions(
+    tmp_path: Path,
+    source: str,
+):
+    secret = tmp_path / ".env"
+    secret.write_text("TOKEN=must-not-reach-provider\n", encoding="utf-8")
+    template = tmp_path / ".env.example"
+    template.write_text("TOKEN=example\n", encoding="utf-8")
+
+    configured_patterns: tuple[str, ...] = ()
+    if source == "ignore_file":
+        (tmp_path / ".stringbeanignore").write_text("!.env\n", encoding="utf-8")
+    else:
+        configured_patterns = ("!.env",)
+
+    exclusions = RepositoryExclusions.discover(tmp_path, configured_patterns)
+    context = collect_repo_context(tmp_path, exclusions)
+
+    assert exclusions.is_excluded(secret)
+    assert not exclusions.is_excluded(template)
+    assert secret.resolve() in exclusions.protected_paths
+    assert ".env" not in context["top_level_files"]
+    assert "must-not-reach-provider" not in str(context)
+
+
+def test_project_negations_remain_ordered_within_project_rules(tmp_path: Path):
+    (tmp_path / "drop.tmp").write_text("drop\n", encoding="utf-8")
+    (tmp_path / "keep.tmp").write_text("keep\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("TOKEN=example\n", encoding="utf-8")
+
+    exclusions = RepositoryExclusions.discover(
+        tmp_path,
+        configured_patterns=("*.tmp", "!keep.tmp", ".env.example"),
+    )
+
+    assert exclusions.is_excluded("drop.tmp")
+    assert not exclusions.is_excluded("keep.tmp")
+    assert exclusions.is_excluded(".env.example")
+
+
 def test_non_git_context_is_first_class_and_does_not_read_excluded_guidance(tmp_path: Path):
     (tmp_path / "README.md").write_text("do not export this\n", encoding="utf-8")
     (tmp_path / "visible.txt").write_text("visible\n", encoding="utf-8")

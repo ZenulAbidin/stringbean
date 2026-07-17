@@ -1,4 +1,22 @@
 agents:
+  claude-fable:
+    adapter: claude
+    command:
+    - claude
+    - --model
+    - fable
+    environment_overrides: {}
+    fallback_agent: null
+    mode: medium
+    model: fable
+    name: claude-fable
+    permissions: read_only
+    prompt_transport: stdin
+    role: advisor
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
   claude-haiku:
     adapter: claude
     command:
@@ -168,13 +186,13 @@ agents:
     - codex
     - exec
     - -m
-    - gpt-5.6
+    - gpt-5.6-sol
     - -c
     - model_reasoning_effort="high"
     environment_overrides: {}
     fallback_agent: null
     mode: high
-    model: gpt-5.6
+    model: gpt-5.6-sol
     name: gpt56-high
     permissions: read_write
     prompt_transport: stdin
@@ -189,17 +207,80 @@ agents:
     - codex
     - exec
     - -m
-    - gpt-5.6
+    - gpt-5.6-sol
     - -c
     - model_reasoning_effort="low"
     environment_overrides: {}
     fallback_agent: null
     mode: low
-    model: gpt-5.6
+    model: gpt-5.6-sol
     name: gpt56-low
     permissions: read_only
     prompt_transport: stdin
     role: reviewer
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
+  gpt56-luna-high:
+    adapter: codex
+    command:
+    - codex
+    - exec
+    - -m
+    - gpt-5.6-luna
+    - -c
+    - model_reasoning_effort="high"
+    environment_overrides: {}
+    fallback_agent: null
+    mode: high
+    model: gpt-5.6-luna
+    name: gpt56-luna-high
+    permissions: read_write
+    prompt_transport: stdin
+    role: orchestrator
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
+  gpt56-luna-low:
+    adapter: codex
+    command:
+    - codex
+    - exec
+    - -m
+    - gpt-5.6-luna
+    - -c
+    - model_reasoning_effort="low"
+    environment_overrides: {}
+    fallback_agent: null
+    mode: low
+    model: gpt-5.6-luna
+    name: gpt56-luna-low
+    permissions: read_only
+    prompt_transport: stdin
+    role: reviewer
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
+  gpt56-luna-medium:
+    adapter: codex
+    command:
+    - codex
+    - exec
+    - -m
+    - gpt-5.6-luna
+    - -c
+    - model_reasoning_effort="medium"
+    environment_overrides: {}
+    fallback_agent: null
+    mode: medium
+    model: gpt-5.6-luna
+    name: gpt56-luna-medium
+    permissions: read_only
+    prompt_transport: stdin
+    role: advisor
     timeout_seconds: 0
     idle_timeout_seconds: 7200
     max_repeated_output_lines: 200
@@ -210,14 +291,77 @@ agents:
     - codex
     - exec
     - -m
-    - gpt-5.6
+    - gpt-5.6-sol
     - -c
     - model_reasoning_effort="medium"
     environment_overrides: {}
     fallback_agent: null
     mode: medium
-    model: gpt-5.6
+    model: gpt-5.6-sol
     name: gpt56-medium
+    permissions: read_only
+    prompt_transport: stdin
+    role: advisor
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
+  gpt56-terra-high:
+    adapter: codex
+    command:
+    - codex
+    - exec
+    - -m
+    - gpt-5.6-terra
+    - -c
+    - model_reasoning_effort="high"
+    environment_overrides: {}
+    fallback_agent: null
+    mode: high
+    model: gpt-5.6-terra
+    name: gpt56-terra-high
+    permissions: read_write
+    prompt_transport: stdin
+    role: orchestrator
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
+  gpt56-terra-low:
+    adapter: codex
+    command:
+    - codex
+    - exec
+    - -m
+    - gpt-5.6-terra
+    - -c
+    - model_reasoning_effort="low"
+    environment_overrides: {}
+    fallback_agent: null
+    mode: low
+    model: gpt-5.6-terra
+    name: gpt56-terra-low
+    permissions: read_only
+    prompt_transport: stdin
+    role: reviewer
+    timeout_seconds: 0
+    idle_timeout_seconds: 7200
+    max_repeated_output_lines: 200
+    working_directory: .
+  gpt56-terra-medium:
+    adapter: codex
+    command:
+    - codex
+    - exec
+    - -m
+    - gpt-5.6-terra
+    - -c
+    - model_reasoning_effort="medium"
+    environment_overrides: {}
+    fallback_agent: null
+    mode: medium
+    model: gpt-5.6-terra
+    name: gpt56-terra-medium
     permissions: read_only
     prompt_transport: stdin
     role: advisor
@@ -282,7 +426,10 @@ workflow:
   - gpt55-low
   - gpt55-medium
   - claude-sonnet
+  - claude-fable
   - gpt56-medium
+  - gpt56-terra-medium
+  - gpt56-luna-medium
   - claude-opus
   implementers:
   - gpt55-low-rw
@@ -301,4 +448,6 @@ workflow:
   - claude-haiku
   - grok-review
   - gpt56-low
+  - gpt56-terra-low
+  - gpt56-luna-low
   testers: []

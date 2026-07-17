@@ -3,6 +3,8 @@ name: sbx
 description: Run Stringbean's sbx orchestrator from inside Claude Code; delegate local repository tasks to Stringbean; or run /sbx with compact live multi-agent orchestration output.
 argument-hint: <task> [--ro|--rw] [--mode auto|low|medium|high] [stringbean flags]
 allowed-tools: [Bash, Read, Glob, Grep, Monitor, TaskOutput, TaskStop]
+user-invocable: true
+disable-model-invocation: true
 ---
 
 # Stringbean sbx
