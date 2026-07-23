@@ -14,7 +14,7 @@ from agent_relay.config import AgentConfig, Config, OutputConfig, RepositoryConf
 from agent_relay.state import RunState, create_new_run
 from agent_relay.workflow import WorkflowEngine
 from agent_relay.models import ImplementerResponse, OrchestratorPlan, RunStatus
-from agent_relay.policy import git_command, install_command_policy_wrappers, internal_subprocess_env
+from agent_relay.policy import ACTIVE_CHILD_ENV, git_command, install_command_policy_wrappers, internal_subprocess_env
 from agent_relay.runner import WatchdogEvent
 from tests.helpers import write_fake_agent
 
@@ -140,6 +140,18 @@ def test_subagent_policy_env_drops_stale_policy_bin_from_parent_path(tmp_path: P
 
     assert path_parts[0] == str(engine.policy_bin_dir)
     assert str(stale_policy_bin) not in path_parts[1:]
+
+
+def test_subagent_policy_env_marks_active_child_and_cannot_be_overridden(tmp_path: Path):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    run_dir = create_new_run(tmp_path, "run-active-child", "Active child", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(_build_config(fake), run_dir, state)
+
+    env = engine._apply_subagent_policy_env({ACTIVE_CHILD_ENV: "0"})
+
+    assert env[ACTIVE_CHILD_ENV] == "1"
 
 
 def test_subagent_policy_env_keeps_unrelated_policy_bin_in_parent_path(tmp_path: Path, monkeypatch):
@@ -335,6 +347,30 @@ def test_fake_run_plans_and_reviews(tmp_path: Path):
     assert result["review_round"] == 1
     assert (run_dir.path / "state.json").exists()
     assert any(p.name.startswith("001-") for p in (run_dir.calls_dir).iterdir())
+
+
+def test_recursion_guard_reaches_every_delegated_role_before_trigger_text(tmp_path: Path):
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    task = "$sbx search for bugs without applying fixes"
+    run_dir = create_new_run(tmp_path, "run-recursion-guard", task, 20, {})
+    state = RunState.load(run_dir.state_path)
+
+    result = asyncio.run(WorkflowEngine(cfg, run_dir, state).run(task))
+
+    assert result["status"] == "COMPLETED"
+    call_dirs = sorted(path for path in run_dir.calls_dir.iterdir() if path.is_dir())
+    assert [path.name.split("-", 1)[1] for path in call_dirs] == [
+        "planner",
+        "advisor",
+        "implementer",
+        "reviewer",
+    ]
+    for call_dir in call_dirs:
+        prompt = call_dir.joinpath("prompt.md").read_text(encoding="utf-8")
+        assert "active delegated workflow child call" in prompt
+        assert prompt.index("active delegated workflow child call") < prompt.index(task)
 
 
 @pytest.mark.parametrize(
@@ -2902,3 +2938,106 @@ def test_auto_mode_enumerates_models_and_selects_lightweight_candidates(tmp_path
     assert any(item["name"] == "high-worker" for item in result["available_models"]["orchestrator"])
     assert any(item["name"] == "low-worker" for item in result["available_models"]["implementer"])
     assert "selected low-worker" in result["selection_rationale"]["implementer"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_advisor"),
+    [
+        ("high", "claude-opus"),
+        ("medium", "claude-sonnet"),
+        ("low", "claude-haiku"),
+    ],
+)
+def test_auto_mode_marks_fable5_unavailable_without_max_plan_and_selects_claude_aliases(
+    tmp_path: Path,
+    monkeypatch,
+    mode: str,
+    expected_advisor: str,
+):
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    cfg.agents.update(
+        {
+            "claude-fable-5": AgentConfig(
+                name="claude-fable-5",
+                adapter="claude",
+                role="advisor",
+                permissions="read_only",
+                model="claude-fable-5",
+                command=["claude", "--model", "claude-fable-5"],
+                mode="medium",
+            ),
+            "claude-opus": AgentConfig(
+                name="claude-opus",
+                adapter="claude",
+                role="advisor",
+                permissions="read_only",
+                model="opus",
+                command=["claude", "--model", "opus"],
+                mode="high",
+            ),
+            "claude-sonnet": AgentConfig(
+                name="claude-sonnet",
+                adapter="claude",
+                role="advisor",
+                permissions="read_only",
+                model="sonnet",
+                command=["claude", "--model", "sonnet"],
+                mode="medium",
+            ),
+            "claude-haiku": AgentConfig(
+                name="claude-haiku",
+                adapter="claude",
+                role="advisor",
+                permissions="read_only",
+                model="haiku",
+                command=["claude", "--model", "haiku"],
+                mode="low",
+            ),
+        }
+    )
+    cfg.workflow.advisors = ["claude-fable-5", "claude-opus", "claude-sonnet", "claude-haiku"]
+
+    run_dir = create_new_run(tmp_path, f"run-fable5-gated-{mode}", f"{mode} task", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    result = asyncio.run(engine.run(f"{mode} task", dry_run=True, global_mode=mode))
+
+    assert result["selected_agents"]["advisor"] == expected_advisor
+    assert result["commands"]["advisor"][2] != "claude-fable-5"
+    fable = next(item for item in result["available_models"]["advisor"] if item["name"] == "claude-fable-5")
+    assert fable["available"] is False
+    assert "Claude Fable 5 requires detected Claude Max plan access" in fable["unavailable_reason"]
+
+
+def test_auto_mode_keeps_fable5_eligible_with_max_plan_opt_in(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+    fake = tmp_path / "agent.sh"
+    write_fake_agent(tmp_path, "agent.sh")
+    cfg = _build_config(fake)
+    cfg.agents["claude-fable-5"] = AgentConfig(
+        name="claude-fable-5",
+        adapter="claude",
+        role="advisor",
+        permissions="read_only",
+        model="claude-fable-5",
+        command=["claude", "--model", "claude-fable-5"],
+        environment_overrides={"STRINGBEAN_CLAUDE_MAX_PLAN": "1"},
+        mode="medium",
+    )
+    cfg.workflow.advisors = ["claude-fable-5"]
+
+    run_dir = create_new_run(tmp_path, "run-fable5-max-plan", "medium task", 20, {})
+    state = RunState.load(run_dir.state_path)
+    engine = WorkflowEngine(cfg, run_dir, state)
+
+    result = asyncio.run(engine.run("medium task", dry_run=True, global_mode="medium"))
+
+    assert result["selected_agents"]["advisor"] == "claude-fable-5"
+    assert result["commands"]["advisor"][:3] == ["claude", "--model", "claude-fable-5"]
+    fable = next(item for item in result["available_models"]["advisor"] if item["name"] == "claude-fable-5")
+    assert fable["available"] is True
+    assert fable["unavailable_reason"] == ""

@@ -1,20 +1,33 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import List
+from typing import Any, List
+
+from agent_relay.capabilities import claude_max_plan_detected
 
 from .base import CommandAdapterMixin, option_value
 
 
+CLAUDE_FABLE5_MAX_PLAN_ENV = "STRINGBEAN_CLAUDE_MAX_PLAN"
+CLAUDE_FABLE5_EXPLICIT_MODELS = {"fable", "claude-fable-5"}
+CLAUDE_FABLE5_REJECTION = (
+    "Claude Fable 5 requires detected Claude Max plan access or an explicit Claude Max plan opt-in. "
+    "Stringbean did not detect Max entitlement and refused to launch explicit model {model!r} for "
+    f"agent {{agent!r}}. Use the portable 'sonnet' model, or set {CLAUDE_FABLE5_MAX_PLAN_ENV}=1 only "
+    "when this Claude account has Max plan access."
+)
+
 LEGACY_CLAUDE_MODEL_ALIASES = {
     # "opus-4.8" (dot separator, no "claude-" prefix) was never a real model
     # id -- only the hyphenated "claude-opus-4-8" full name is real. Repair
-    # the malformed legacy string; real full names (claude-opus-4-8,
-    # claude-sonnet-5, claude-fable-5, claude-haiku-4-5-...) pass straight
-    # through to the CLI, which accepts them natively alongside the stable
-    # opus/sonnet/haiku/fable aliases.
+    # the malformed legacy string. Malformed legacy Fable 5 spellings are
+    # fail-closed to Sonnet; explicit Fable 5 requests are rejected below
+    # unless a Max-plan opt-in is present.
     "opus-4.8": "opus",
+    "claude-fable5": "sonnet",
+    "fable-5": "sonnet",
 }
 
 
@@ -25,6 +38,48 @@ def normalize_claude_model(model: str | None) -> str | None:
     if not normalized:
         return normalized
     return LEGACY_CLAUDE_MODEL_ALIASES.get(normalized.lower(), normalized)
+
+
+def claude_max_plan_enabled(
+    environment_overrides: dict[str, str] | None = None,
+    capability_root: Path | None = None,
+) -> bool:
+    configured = (environment_overrides or {}).get(CLAUDE_FABLE5_MAX_PLAN_ENV)
+    value = configured if configured is not None else os.environ.get(CLAUDE_FABLE5_MAX_PLAN_ENV, "")
+    if value.strip().lower() in {"1", "true", "yes", "on", "max"}:
+        return True
+    if capability_root is None or not capability_root.is_dir():
+        return False
+    return claude_max_plan_detected(capability_root)
+
+
+def _is_explicit_fable5_model(model: str | None) -> bool:
+    return bool(model and model.strip().lower() in CLAUDE_FABLE5_EXPLICIT_MODELS)
+
+
+def claude_agent_uses_fable5(agent: Any) -> bool:
+    configured_model = normalize_claude_model(getattr(agent, "model", None))
+    if _is_explicit_fable5_model(configured_model):
+        return True
+    command = getattr(agent, "command", None) or []
+    command_model = option_value(_normalize_model_option(list(command)), "--model")
+    return _is_explicit_fable5_model(command_model)
+
+
+def claude_agent_fable5_available(agent: Any, capability_root: Path | None = None) -> bool:
+    if not claude_agent_uses_fable5(agent):
+        return True
+    return claude_max_plan_enabled(getattr(agent, "environment_overrides", None), capability_root)
+
+
+def _reject_non_max_fable5(
+    model: str | None,
+    agent_name: str,
+    environment_overrides: dict[str, str] | None = None,
+    capability_root: Path | None = None,
+) -> None:
+    if _is_explicit_fable5_model(model) and not claude_max_plan_enabled(environment_overrides, capability_root):
+        raise ValueError(CLAUDE_FABLE5_REJECTION.format(model=model, agent=agent_name))
 
 
 def _normalize_model_option(command: List[str]) -> List[str]:
@@ -47,6 +102,7 @@ class ClaudeAdapter(CommandAdapterMixin):
         configured_model = normalize_claude_model(self.agent.model)
         if configured_model and self._model(command) is None:
             command = command + ["--model", configured_model]
+        _reject_non_max_fable5(self._model(command), self.agent.name, self.agent.environment_overrides, repo_root)
         if "-p" not in command and "--print" not in command:
             command = command + ["--print"]
 

@@ -31,6 +31,12 @@ MAX_WAIT_SECONDS = 5.0
 MAX_TERMINAL_RESULTS = 8
 VALID_PROFILES = {"ro", "rw"}
 VALID_MODES = {"auto", "low", "medium", "high"}
+ACTIVE_CHILD_ENV = "STRINGBEAN_ACTIVE_CHILD"
+ACTIVE_CHILD_ERROR = (
+    "Nested Stringbean orchestration is disabled because this process is already an active "
+    "Stringbean child. Complete the assigned role directly instead of starting or resuming "
+    "another run."
+)
 UNTRUSTED_CHILD_ENV = {
     "BASH_ENV",
     "BASHOPTS",
@@ -619,6 +625,10 @@ def _tool_result(payload: dict[str, Any], *, is_error: bool = False) -> dict[str
     }
 
 
+def _is_active_child() -> bool:
+    return os.environ.get(ACTIVE_CHILD_ENV) == "1"
+
+
 def _handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
     method = message.get("method")
     request_id = message.get("id")
@@ -646,15 +656,17 @@ def _handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
                 "tools": {"listChanged": False},
                 "experimental": {SANDBOX_META_CAPABILITY: {}},
             },
-            "serverInfo": {"name": "stringbean", "version": "0.2.0"},
+            "serverInfo": {"name": "stringbean", "version": "0.2.1"},
         }
     elif method == "ping":
         result = {}
     elif method == "tools/list":
-        result = {"tools": TOOLS}
+        result = {"tools": [] if _is_active_child() else TOOLS}
     elif method == "tools/call":
         params = message.get("params")
-        if not isinstance(params, dict):
+        if _is_active_child():
+            result = _tool_result({"error": ACTIVE_CHILD_ERROR}, is_error=True)
+        elif not isinstance(params, dict):
             result = _tool_result({"error": "tools/call params must be an object"}, is_error=True)
         else:
             name = params.get("name")

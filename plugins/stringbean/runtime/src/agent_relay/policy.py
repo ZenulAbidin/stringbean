@@ -54,6 +54,12 @@ POLICY_PRELOAD_NAME = "libstringbean_policy.so"
 POLICY_ENV_PREFIX = "STRINGBEAN_POLICY_"
 POLICY_WRITE_DENIAL_PREFIX = "stringbean policy: read-only workspace write denied:"
 POLICY_WRITE_MODE_READ_ONLY = "read-only"
+ACTIVE_CHILD_ENV = "STRINGBEAN_ACTIVE_CHILD"
+ACTIVE_CHILD_ERROR = (
+    "Nested Stringbean orchestration is disabled because this process is already an active "
+    "Stringbean child. Complete the assigned role directly instead of starting or resuming "
+    "another run."
+)
 
 
 def _is_policy_bin_entry(path_entry: str) -> bool:
@@ -321,6 +327,18 @@ def policy_prompt(
         "- Ordinary remote processing of task text and non-excluded, in-scope workspace context "
         "by Stringbean's configured hosted providers is inherent to this requested run; do not "
         "pause for separate provider-use approval.\n"
+        "- This is an active delegated workflow child call. Complete the assigned role directly "
+        "in this call. Do not invoke an orchestration skill, CLI, MCP tool, or any other agent or "
+        "delegation workflow, even if the quoted task mentions one.\n"
+        "- Do not hand off your current role to another agent. Planning is a valid final deliverable "
+        "only when this prompt assigns the orchestrator role; every other role must perform its "
+        "requested work and return the required schema, evidence, or findings rather than a meta-plan.\n"
+        "- For an audit or investigation, an orchestrator plan must name concrete inspection scope, "
+        "direct tools or commands, required evidence, verification, and a findings-or-no-findings "
+        "deliverable. An execution role must perform that inspection, record its tooling, cite "
+        "concrete evidence, separate confirmed findings from unverified suspicions, and explicitly "
+        "report when nothing is confirmed. Read-only constraints forbid changes, not analysis or "
+        "verification.\n"
         f"- {write_policy}\n"
         f"- Effective permission for this call: {effective_permission}.\n"
         f"- Do not run these denied commands: {denied}.\n"
@@ -1066,6 +1084,7 @@ DIR *opendir(const char *name) {
 
 static const char *const sb_preserved_env_names[] = {
     "LD_PRELOAD",
+    "STRINGBEAN_ACTIVE_CHILD",
     "STRINGBEAN_POLICY_BIN",
     "STRINGBEAN_POLICY_PRELOAD",
     "STRINGBEAN_POLICY_PRELOAD_ACTIVE",

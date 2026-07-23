@@ -17,6 +17,7 @@ from rich.prompt import Confirm
 from rich.text import Text
 
 from .connectors import Adapter, AdapterCapabilities, ClaudeConnector, CodexConnector, GenericConnector, GrokConnector
+from .adapters.claude import claude_agent_fable5_available, claude_agent_uses_fable5
 from .config import AgentConfig, Config
 from .context import collect_repo_context
 from .exclusions import RepositoryExclusions, is_control_metadata_path
@@ -31,6 +32,7 @@ from .models import (
 )
 from .parser import parse_structured_output
 from .policy import (
+    ACTIVE_CHILD_ENV,
     DENIED_COMMANDS,
     DENIED_GIT_SUBCOMMANDS,
     POLICY_PRELOAD_NAME,
@@ -1136,6 +1138,7 @@ class WorkflowEngine:
         existing_path = out.get("PATH") or os.environ.get("PATH", "")
         existing_path = path_without_policy_bins(existing_path)
         out["PATH"] = f"{self.policy_bin_dir}{os.pathsep}{existing_path}" if existing_path else str(self.policy_bin_dir)
+        out[ACTIVE_CHILD_ENV] = "1"
         out["STRINGBEAN_EXECUTION_PROFILE"] = self.execution_profile
         out["STRINGBEAN_DENIED_COMMANDS"] = ",".join(DENIED_COMMANDS)
         out["STRINGBEAN_DENIED_GIT_SUBCOMMANDS"] = ",".join(DENIED_GIT_SUBCOMMANDS)
@@ -1189,7 +1192,22 @@ class WorkflowEngine:
                 raise RuntimeError(f"Resolved mode {value!r} for {role} is not supported")
         return resolved
 
-    def _agent_candidates_for_role(self, role: str) -> List[str]:
+    def _agent_available_for_auto_selection(self, agent_name: str) -> bool:
+        agent = self.config.agents[agent_name]
+        if agent.adapter.lower() != "claude":
+            return True
+        return claude_agent_fable5_available(agent, self.repo_root)
+
+    def _agent_unavailable_reason(self, agent_name: str) -> str:
+        agent = self.config.agents[agent_name]
+        if agent.adapter.lower() == "claude" and claude_agent_uses_fable5(agent):
+            return (
+                "Claude Fable 5 requires detected Claude Max plan access or "
+                "STRINGBEAN_CLAUDE_MAX_PLAN=1; unavailable or uncertain Max detection fails closed."
+            )
+        return ""
+
+    def _agent_candidates_for_role(self, role: str, *, include_unavailable: bool = False) -> List[str]:
         if role == "orchestrator":
             candidates = [self.config.workflow.orchestrator]
             for name, agent in self.config.agents.items():
@@ -1197,13 +1215,24 @@ class WorkflowEngine:
                     continue
                 if agent.adapter == "codex" or agent.permissions == "read_write":
                     candidates.append(name)
-            return candidates
+            if include_unavailable:
+                return candidates
+            return [name for name in candidates if self._agent_available_for_auto_selection(name)]
         if role == "advisor":
-            return list(self.config.workflow.advisors)
+            candidates = list(self.config.workflow.advisors)
+            if include_unavailable:
+                return candidates
+            return [name for name in candidates if self._agent_available_for_auto_selection(name)]
         if role == "implementer":
-            return list(self.config.workflow.implementers)
+            candidates = list(self.config.workflow.implementers)
+            if include_unavailable:
+                return candidates
+            return [name for name in candidates if self._agent_available_for_auto_selection(name)]
         if role == "reviewer":
-            return list(self.config.workflow.reviewers)
+            candidates = list(self.config.workflow.reviewers)
+            if include_unavailable:
+                return candidates
+            return [name for name in candidates if self._agent_available_for_auto_selection(name)]
         return []
 
     @staticmethod
@@ -1267,10 +1296,11 @@ class WorkflowEngine:
             list(self.config.agents).index(agent_name),
         )
 
-    def _agent_catalog_for_role(self, role: str) -> List[Dict[str, str]]:
-        catalog: List[Dict[str, str]] = []
-        for agent_name in self._agent_candidates_for_role(role):
+    def _agent_catalog_for_role(self, role: str) -> List[Dict[str, object]]:
+        catalog: List[Dict[str, object]] = []
+        for agent_name in self._agent_candidates_for_role(role, include_unavailable=True):
             agent = self.config.agents[agent_name]
+            available = self._agent_available_for_auto_selection(agent_name)
             catalog.append(
                 {
                     "name": agent_name,
@@ -1278,6 +1308,8 @@ class WorkflowEngine:
                     "model": agent.model or "",
                     "mode": self._agent_mode(agent_name) or "default",
                     "permissions": agent.permissions,
+                    "available": available,
+                    "unavailable_reason": "" if available else self._agent_unavailable_reason(agent_name),
                 }
             )
         return catalog

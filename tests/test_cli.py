@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from agent_relay import cli
+from agent_relay.policy import ACTIVE_CHILD_ENV, ACTIVE_CHILD_ERROR
 from agent_relay.state import create_new_run
 
 
@@ -94,10 +95,26 @@ def test_cli_help_available():
     assert "agent" + "-relay" not in help_text
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["run", "nested task", "--dry-run"],
+        ["resume", "missing-run"],
+    ],
+)
+def test_cli_rejects_nested_orchestration(args: list[str], monkeypatch):
+    monkeypatch.setenv(ACTIVE_CHILD_ENV, "1")
+
+    result = runner.invoke(cli.app, args)
+
+    assert result.exit_code == 2
+    assert " ".join(ACTIVE_CHILD_ERROR.split()) in " ".join(result.output.split())
+
+
 def test_cli_version_available():
     result = runner.invoke(cli.app, ["--version"])
     assert result.exit_code == 0
-    assert "stringbean 0.2.0" in result.stdout
+    assert "stringbean 0.2.1" in result.stdout
 
 
 def test_run_help_lists_agent_stream_switch():
@@ -699,6 +716,7 @@ def test_preset_d_uses_supported_claude_aliases_and_effort_levels():
         if effort:
             expected_command.extend(["--effort", effort])
         assert agent.command == expected_command
+    assert "claude-fable" not in cfg.workflow.advisors
 
 
 def test_run_rejects_manually_configured_placeholder_before_launch(tmp_path: Path, monkeypatch):

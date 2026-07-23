@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -34,7 +35,13 @@ from .state import RunDirectory, RunState, create_new_run, list_runs
 from .templates import available_template_names
 from .utils import git_status_short, stable_id
 from .workflow import WorkflowEngine
-from .policy import git_command, internal_subprocess_env, normalize_execution_profile
+from .policy import (
+    ACTIVE_CHILD_ENV,
+    ACTIVE_CHILD_ERROR,
+    git_command,
+    internal_subprocess_env,
+    normalize_execution_profile,
+)
 
 app = typer.Typer(help=f"{PROJECT_NAME} local orchestrator CLI.")
 console = Console()
@@ -567,7 +574,7 @@ def _preset_config(preset: str) -> Config:
             },
             workflow=WorkflowConfig(
                 orchestrator="gpt55-high",
-                advisors=["gpt55-low", "gpt55-medium", "claude-sonnet", "claude-fable", "gpt56-medium", "gpt56-terra-medium", "gpt56-luna-medium", "claude-opus"],
+                advisors=["gpt55-low", "gpt55-medium", "claude-sonnet", "gpt56-medium", "gpt56-terra-medium", "gpt56-luna-medium", "claude-opus"],
                 implementers=["gpt55-low-rw", "gpt55-medium-rw", "gpt55-high", "grok-build"],
                 reviewers=["gpt55-low", "claude-opus", "claude-haiku", "grok-review", "gpt56-low", "gpt56-terra-low", "gpt56-luna-low"],
                 advisor_policy="before_implementation",
@@ -1058,6 +1065,12 @@ def _resolve_execution_profile(profile: str, ro: bool, rw: bool) -> str:
         raise typer.BadParameter(str(exc)) from exc
 
 
+def _reject_nested_orchestration() -> None:
+    if os.environ.get(ACTIVE_CHILD_ENV) == "1":
+        console.print(ACTIVE_CHILD_ERROR)
+        raise typer.Exit(code=2)
+
+
 @app.command()
 def run(
     task: str = typer.Argument(...),
@@ -1136,6 +1149,7 @@ def run(
     """
     Execute a full workflow run.
     """
+    _reject_nested_orchestration()
     final_block_output = codex_final or plugin_full_output or plugin_compact_output
     compact_final_output = (codex_final or plugin_compact_output) and not plugin_full_output
     plugin_success_exit = plugin_full_output or plugin_compact_output
@@ -1280,6 +1294,7 @@ def resume(
     """
     Resume a partial run from the persisted state.
     """
+    _reject_nested_orchestration()
     root = _project_root()
     path = _agent_relay_root(root) / RUN_DIR_NAME / run_id
     if not path.exists():

@@ -11,6 +11,7 @@ from agent_relay.config import RepositoryConfig
 from agent_relay.context import collect_repo_context, read_text_if_present
 from agent_relay.exclusions import RepositoryExclusions
 from agent_relay.policy import (
+    ACTIVE_CHILD_ENV,
     POLICY_PRELOAD_NAME,
     install_command_policy_wrappers,
     internal_subprocess_env,
@@ -43,6 +44,27 @@ def test_policy_prompt_continues_without_sensitive_path_or_provider_consent_paus
         "inspect it"
         in normalized
     )
+
+
+def test_policy_prompt_requires_direct_child_execution_and_audit_evidence(tmp_path: Path):
+    text = policy_prompt("ro", "read_only", workspace_root=tmp_path)
+
+    normalized = " ".join(text.split())
+    assert "active delegated workflow child call" in normalized
+    assert "Do not invoke an orchestration skill, CLI, MCP tool" in normalized
+    assert "even if the quoted task mentions one" in normalized
+    assert (
+        "Planning is a valid final deliverable only when this prompt assigns the orchestrator role"
+        in normalized
+    )
+    assert (
+        "concrete inspection scope, direct tools or commands, required evidence, verification"
+        in normalized
+    )
+    assert "separate confirmed findings from unverified suspicions" in normalized
+    assert "Read-only constraints forbid changes, not analysis or verification" in normalized
+    assert "$sbx" not in text
+    assert "start_sbx" not in text
 
 
 def test_exclusions_protect_secrets_and_nested_repositories_without_hiding_templates(tmp_path: Path):
@@ -269,3 +291,43 @@ def test_excluded_read_policy_survives_scrubbed_child_environments(tmp_path: Pat
     assert proc.returncode == 0, proc.stderr
     assert "must-not-reach-scrubbed-child" not in proc.stdout
     assert "excluded path access denied" in proc.stderr
+
+
+@pytest.mark.parametrize("launcher", ["execve", "posix_spawn"])
+def test_active_child_marker_survives_scrubbed_child_environments(tmp_path: Path, launcher: str):
+    if launcher == "posix_spawn" and not hasattr(os, "posix_spawn"):
+        pytest.skip("os.posix_spawn is not available on this platform")
+    policy_bin = install_command_policy_wrappers(tmp_path / "policy")
+    preload = policy_bin / POLICY_PRELOAD_NAME
+    if not preload.is_file():
+        pytest.skip("policy preload library was not built on this platform")
+
+    child_code = (
+        "import os, sys\n"
+        f"sys.exit(0 if os.environ.get({ACTIVE_CHILD_ENV!r}) == '1' else 9)\n"
+    )
+    outer_code = (
+        "import os, sys\n"
+        f"argv = [sys.executable, '-c', {child_code!r}]\n"
+        "child_env = {'PATH': os.environ['PATH']}\n"
+        f"launcher = {launcher!r}\n"
+        "if launcher == 'execve':\n"
+        "    os.execve(sys.executable, argv, child_env)\n"
+        "pid = os.posix_spawn(sys.executable, argv, child_env)\n"
+        "_, status = os.waitpid(pid, 0)\n"
+        "sys.exit(os.waitstatus_to_exitcode(status))\n"
+    )
+    env = internal_subprocess_env()
+    env["LD_PRELOAD"] = str(preload)
+    env["STRINGBEAN_POLICY_PRELOAD"] = str(preload)
+    env[ACTIVE_CHILD_ENV] = "1"
+
+    proc = subprocess.run(
+        [sys.executable, "-c", outer_code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr

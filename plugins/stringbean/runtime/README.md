@@ -6,11 +6,11 @@ filesystem audit trail, and runs a small resumable workflow.
 
 It is designed to run headlessly and be called from your favorite agent program (codex, claude code, etc) using `/sbx`. It can be run in read-only mode or in read-write mode (the default).
 
-Current release: `0.2.0`.
+Current release: `0.2.1`.
 
 ## What this project does
 
-Stringbean is excellent for running complex tasks which require long durations. Each invocation runs several advisor and orchestrator agents while auto-selecting the most efficient model with a reasonable quota. This way, you can avoid running your entire session in Fable or Sol and burning through your usage limit. It is also great for turning terse instructions into specific, actionable plans.
+Stringbean is excellent for running complex tasks which require long durations. Each invocation runs several advisor and orchestrator agents while auto-selecting the most efficient model with a reasonable quota. This way, you can avoid running your entire session on the highest-quota model available to your account. It is also great for turning terse instructions into specific, actionable plans.
 
 - Runs an MCP-style workflow (planning → review → implementation → review) across configured agent roles
 - Supports multiple providers through adapter plugins:
@@ -504,7 +504,7 @@ Preset D (fine-grained model mix):
 
 `--mode auto` enumerates the configured candidate agents/models for each role, infers high/medium/low from the task text, then selects the lowest-cost adequate candidate for that role. Dry runs include `available_models` and `selection_rationale` so you can see what was considered and why an agent was selected. Simple read/list/show tasks route to low reasoning candidates; complex refactors, migrations, security, architecture, and distributed-system tasks route to stronger high reasoning candidates. Explicit agent choices such as `--advisor claude-sonnet` take precedence over mode selection; use `--orchestrator-mode`, `--advisor-mode`, `--implementer-mode`, and `--reviewer-mode` when you want automatic selection constrained by reasoning level instead.
 
-Claude Code's stable aliases are intentional: `opus`, `sonnet`, and `haiku` resolve to models available for the user's provider and account. Stringbean transparently repairs legacy preset values (`claude-opus-4-8`, `claude-sonnet-5`, and `claude-fable-5`) at launch so older configs no longer fail model validation.
+Claude Code's stable aliases are intentional: `opus`, `sonnet`, and `haiku` resolve to models available for the user's provider and account. Stringbean transparently repairs legacy preset values at launch so older configs no longer fail model validation. The default presets use non-Fable Claude aliases for non-Max users. Explicit Fable 5 requests (`fable` or `claude-fable-5`) fail closed unless Stringbean detects Claude Max plan access from the local capability artifact; missing, unreadable, or ambiguous capability data is treated as no Max access. `STRINGBEAN_CLAUDE_MAX_PLAN=1` is an explicit opt-in for users who know the active Claude account has Max plan access, and the user is responsible for setting it only for such accounts. Malformed legacy Fable spellings such as `fable-5` are downgraded to `sonnet`.
 
 Create it with:
 

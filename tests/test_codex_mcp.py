@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 import yaml
 
+from agent_relay.policy import ACTIVE_CHILD_ENV, ACTIVE_CHILD_ERROR
+
 
 REPO = Path(__file__).resolve().parents[1]
 SERVER = REPO / "plugins" / "stringbean" / "mcp" / "server.py"
@@ -129,6 +131,7 @@ def test_codex_plugin_preapproves_only_the_typed_start_boundary():
     assert config["enabled_tools"] == ["start_sbx", "poll_sbx", "cancel_sbx"]
     assert config["tools"] == {"start_sbx": {"approval_mode": "approve"}}
     assert config["supports_parallel_tool_calls"] is False
+    assert ACTIVE_CHILD_ENV in config["env_vars"]
     command = Path(config["command"])
     assert command.is_absolute()
     assert command.is_file()
@@ -243,6 +246,27 @@ def test_codex_mcp_handshake_lists_narrow_honestly_annotated_tools():
         }
         assert by_name["poll_sbx"]["annotations"]["readOnlyHint"] is True
         assert by_name["cancel_sbx"]["annotations"]["destructiveHint"] is True
+    finally:
+        session.close()
+
+
+def test_codex_mcp_hides_tools_and_rejects_calls_for_active_child(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    env = {**os.environ, ACTIVE_CHILD_ENV: "1"}
+    session = McpSession(env=env)
+    try:
+        assert session.request("tools/list")["result"]["tools"] == []
+        response = session.request(
+            "tools/call",
+            {
+                "name": "start_sbx",
+                "arguments": {"task": "must not run", "dry_run": True},
+                "_meta": _call_meta(workspace),
+            },
+        )
+        assert response["result"]["isError"] is True
+        assert response["result"]["structuredContent"]["error"] == ACTIVE_CHILD_ERROR
     finally:
         session.close()
 

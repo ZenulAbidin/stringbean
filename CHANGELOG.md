@@ -2,28 +2,50 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-23
+
+### Added
+
+- Fail-closed Claude Max-plan capability detection (`src/agent_relay/capabilities.py`): reads only the
+  local, non-secret `.stringbean/cli-capabilities.json` artifact, rejecting symlinks, malformed JSON,
+  missing/ambiguous fields, untrusted sources, and signals older than 7 days.
+- Auto-selection and dry-run catalogs now mark Fable 5 agents `available: false` with a reason when the
+  Max-plan gate is closed, so a closed gate keeps Fable out of `--mode auto` candidate lists instead of
+  only failing at launch time.
+
+### Fixed
+
+- Product decision for non-Max Claude accounts: Stringbean must not launch Fable 5 unless Claude Max
+  plan access is detected from the local capability artifact or `STRINGBEAN_CLAUDE_MAX_PLAN=1` is set
+  (via environment variable or an agent's `environment_overrides`). Missing, unreadable, or ambiguous
+  capability data is treated as no Max access. Users who set `STRINGBEAN_CLAUDE_MAX_PLAN=1` are
+  responsible for enabling it only for Claude accounts with Max plan access.
+  Legacy repaired Fable aliases downgrade to Sonnet, while newly explicit `fable` / `claude-fable-5`
+  config is rejected with a diagnostic naming the detection and opt-in paths.
+- Delegated agents now receive a direct-execution contract that forbids recursive orchestration and
+  requires concrete scope, tooling, evidence, and confirmed-versus-unverified findings for audits.
+  An inherited active-child marker also hides and rejects nested Stringbean MCP/CLI launches while
+  preserving unrelated Codex plugins and user configuration.
+
 ## [0.2.0] - 2026-07-17
 
 ### Added
 
 - `gpt-5.6` `terra` and `luna` model variants are now available alongside `sol`, as `gpt56-terra-*` and
   `gpt56-luna-*` orchestrator/advisor/reviewer agents.
-- Explicit pinned-model Claude agents (`claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`,
-  `claude-fable-5`) are now available alongside the existing stable-alias agents (`claude-opus`,
-  `claude-sonnet`, `claude-haiku`, `claude-fable`), so configs can choose portability or a pinned model.
-- Preset D now includes a `claude-fable` agent; Fable 5 was previously entirely absent from the preset's
-  agent catalog.
+- Explicit pinned-model Claude agents (`claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`)
+  are available alongside the existing stable-alias agents (`claude-opus`, `claude-sonnet`,
+  `claude-haiku`), so configs can choose portability or a pinned model. Current versions gate Fable 5
+  catalog entries and non-Max Claude accounts should use the portable `sonnet` alias instead.
 
 ### Fixed
 
 - `gpt56-*` Codex orchestrator/advisor/reviewer agents now request the `gpt-5.6-sol` model instead of the
   bare `gpt-5.6`, which Codex rejects under a ChatGPT-account login ("The 'gpt-5.6' model is not supported
   when using Codex with a ChatGPT account").
-- The Claude adapter's legacy-model repair table no longer reroutes `fable` / `claude-fable-5` requests to
-  `sonnet`; Fable 5 agents now actually invoke Fable 5 instead of silently running Sonnet 5. It also no
-  longer rewrites the real model ids `claude-opus-4-8` and `claude-sonnet-5` down to their generic aliases,
-  since the Claude Code CLI accepts full model names natively; only the malformed legacy string `opus-4.8`
-  is still repaired.
+- The Claude adapter's legacy-model repair table no longer rewrites the real model ids
+  `claude-opus-4-8` and `claude-sonnet-5` down to their generic aliases, since the Claude Code CLI accepts
+  full model names natively; only malformed legacy strings such as `opus-4.8` are repaired.
 - Explicit Codex `$sbx` runs now use a bundled, versioned local plugin tool instead of an escalated shell
   command, avoiding the over-broad provider-transfer Auto-review denial. The tool is workspace- and
   thread-bound, accepts only typed options, returns compact sanitized progress, and leaves

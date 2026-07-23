@@ -1,6 +1,6 @@
 {
   "name": "grok-stringbean",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Use Stringbean's sbx orchestrator from inside Grok Build.",
   "author": {
     "name": "Stringbean"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import os
 import subprocess
@@ -19,6 +20,11 @@ from agent_relay.config import (
     WorkflowConfig,
     load_config,
     save_config,
+)
+from agent_relay.capabilities import (
+    CLAUDE_MAX_PLAN_SIGNAL_SOURCE,
+    claude_max_plan_detected,
+    claude_max_plan_detected_from_payload,
 )
 from agent_relay.policy import (
     POLICY_PRELOAD_NAME,
@@ -261,9 +267,36 @@ def test_claude_adapter_uses_noninteractive_stream_json(tmp_path: Path):
     assert not adapter.supports_prompt_transport("file")
 
 
-def test_claude_adapter_passes_through_native_full_model_name_when_command_is_implicit(tmp_path: Path):
+def test_claude_adapter_rejects_fable5_by_default(tmp_path: Path, monkeypatch):
     from agent_relay.adapters import ClaudeAdapter
 
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+    cfg = AgentConfig(
+        name="claude-fable",
+        adapter="claude",
+        model="claude-fable-5",
+        role="advisor",
+        permissions="read_only",
+        command=None,
+        prompt_transport="stdin",
+    )
+    adapter = ClaudeAdapter(cfg)
+
+    with pytest.raises(ValueError) as excinfo:
+        adapter.build_command("prompt", tmp_path)
+
+    assert "Claude Fable 5 requires detected Claude Max plan access or an explicit Claude Max plan opt-in" in str(
+        excinfo.value
+    )
+    assert "Stringbean did not detect Max entitlement" in str(excinfo.value)
+    assert "STRINGBEAN_CLAUDE_MAX_PLAN=1" in str(excinfo.value)
+    assert "'claude-fable-5'" in str(excinfo.value)
+
+
+def test_claude_adapter_allows_implicit_fable5_with_max_plan_opt_in(tmp_path: Path, monkeypatch):
+    from agent_relay.adapters import ClaudeAdapter
+
+    monkeypatch.setenv("STRINGBEAN_CLAUDE_MAX_PLAN", "1")
     cfg = AgentConfig(
         name="claude-fable",
         adapter="claude",
@@ -286,10 +319,226 @@ def test_claude_adapter_passes_through_native_full_model_name_when_command_is_im
     ]
 
 
+def test_claude_adapter_allows_explicit_fable5_with_agent_opt_in(tmp_path: Path, monkeypatch):
+    from agent_relay.adapters import ClaudeAdapter
+
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+    cfg = AgentConfig(
+        name="claude-fable",
+        adapter="claude",
+        model=None,
+        role="advisor",
+        permissions="read_only",
+        command=["claude", "--model", "fable"],
+        prompt_transport="stdin",
+        environment_overrides={"STRINGBEAN_CLAUDE_MAX_PLAN": "true"},
+    )
+
+    assert ClaudeAdapter(cfg).build_command("prompt", tmp_path)[:3] == ["claude", "--model", "fable"]
+
+
+def _claude_max_plan_payload(detected_at: datetime) -> dict[str, object]:
+    return {
+        "provider_capabilities": {
+            "claude": {
+                "max_plan": {
+                    "detected": True,
+                    "source": CLAUDE_MAX_PLAN_SIGNAL_SOURCE,
+                    "detected_at": detected_at.isoformat(),
+                }
+            }
+        }
+    }
+
+
+def test_claude_max_plan_detection_accepts_exact_supported_signal():
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+
+    assert claude_max_plan_detected_from_payload(_claude_max_plan_payload(now), now=now)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"provider_capabilities": {}},
+        {"provider_capabilities": {"claude": {}}},
+        {"provider_capabilities": {"claude": {"max_plan": {"detected": True}}}},
+        {
+            "provider_capabilities": {
+                "claude": {
+                    "max_plan": {
+                        "detected": "true",
+                        "source": CLAUDE_MAX_PLAN_SIGNAL_SOURCE,
+                        "detected_at": "2026-07-22T12:00:00+00:00",
+                    }
+                }
+            }
+        },
+        {
+            "provider_capabilities": {
+                "claude": {
+                    "max_plan": {
+                        "detected": True,
+                        "source": "unverified",
+                        "detected_at": "2026-07-22T12:00:00+00:00",
+                    }
+                }
+            }
+        },
+        {
+            "provider_capabilities": {
+                "claude": {
+                    "max_plan": {
+                        "detected": True,
+                        "source": CLAUDE_MAX_PLAN_SIGNAL_SOURCE,
+                        "detected_at": "not-a-timestamp",
+                    }
+                }
+            }
+        },
+        {
+            "provider_capabilities": {
+                "claude": {
+                    "max_plan": {
+                        "detected": True,
+                        "source": CLAUDE_MAX_PLAN_SIGNAL_SOURCE,
+                        "detected_at": "2026-07-22T12:00:00+00:00",
+                    }
+                },
+                "claude_alt": {
+                    "max_plan": {
+                        "detected": True,
+                        "source": CLAUDE_MAX_PLAN_SIGNAL_SOURCE,
+                        "detected_at": "2026-07-22T12:00:00+00:00",
+                    }
+                },
+            }
+        },
+        {
+            "provider_capabilities": {
+                "claude": {
+                    "max_plan": {
+                        "detected": True,
+                        "source": CLAUDE_MAX_PLAN_SIGNAL_SOURCE,
+                        "detected_at": "2026-07-22T12:00:00+00:00",
+                        "plan": "max",
+                    }
+                }
+            }
+        },
+    ],
+)
+def test_claude_max_plan_detection_missing_malformed_or_ambiguous_data_returns_false(payload):
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+
+    assert not claude_max_plan_detected_from_payload(payload, now=now)
+
+
+def test_claude_max_plan_detection_stale_data_returns_false():
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    stale = now - timedelta(days=8)
+
+    assert not claude_max_plan_detected_from_payload(_claude_max_plan_payload(stale), now=now)
+
+
+def test_claude_max_plan_detection_reads_only_local_non_secret_capability_artifact(tmp_path: Path):
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    home_capabilities = tmp_path / "home" / ".stringbean" / "cli-capabilities.json"
+    home_capabilities.parent.mkdir(parents=True)
+    home_capabilities.write_text(json.dumps(_claude_max_plan_payload(now)), encoding="utf-8")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    assert not claude_max_plan_detected(project, now=now)
+
+    local_capabilities = project / ".stringbean" / "cli-capabilities.json"
+    local_capabilities.parent.mkdir()
+    local_capabilities.write_text(json.dumps(_claude_max_plan_payload(now)), encoding="utf-8")
+    assert claude_max_plan_detected(project, now=now)
+
+
+def test_claude_adapter_allows_explicit_fable5_with_detected_max_plan(tmp_path: Path, monkeypatch):
+    from agent_relay.adapters import ClaudeAdapter
+
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+    capabilities = tmp_path / ".stringbean" / "cli-capabilities.json"
+    capabilities.parent.mkdir()
+    capabilities.write_text(json.dumps(_claude_max_plan_payload(datetime.now(timezone.utc))), encoding="utf-8")
+    cfg = AgentConfig(
+        name="explicit-claude",
+        adapter="claude",
+        model="fable",
+        role="advisor",
+        permissions="read_only",
+        command=["claude", "--model", "fable"],
+        prompt_transport="stdin",
+    )
+
+    command = ClaudeAdapter(cfg).build_command("prompt", tmp_path)
+
+    assert command[:3] == ["claude", "--model", "fable"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"provider_capabilities": {"claude": {"max_plan": {"detected": True}}}},
+    ],
+)
+def test_claude_adapter_rejects_fable5_with_absent_or_ambiguous_capability_data(
+    tmp_path: Path,
+    monkeypatch,
+    payload: dict[str, object],
+):
+    from agent_relay.adapters import ClaudeAdapter
+
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+    capabilities = tmp_path / ".stringbean" / "cli-capabilities.json"
+    capabilities.parent.mkdir()
+    capabilities.write_text(json.dumps(payload), encoding="utf-8")
+    cfg = AgentConfig(
+        name="explicit-claude",
+        adapter="claude",
+        model="claude-fable-5",
+        role="advisor",
+        permissions="read_only",
+        command=None,
+        prompt_transport="stdin",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        ClaudeAdapter(cfg).build_command("prompt", tmp_path)
+
+    message = str(excinfo.value)
+    assert "did not detect Max entitlement" in message
+    assert "Use the portable 'sonnet' model" in message
+
+
+def test_claude_max_plan_opt_in_does_not_read_excluded_credential_paths(monkeypatch, tmp_path: Path):
+    from agent_relay.adapters.claude import claude_max_plan_enabled
+
+    def fail_if_path_is_read(*args, **kwargs):
+        raise AssertionError("opt-in parsing must not inspect capability or credential files")
+
+    monkeypatch.setattr(Path, "is_file", fail_if_path_is_read)
+    monkeypatch.setattr(Path, "read_text", fail_if_path_is_read)
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+
+    assert not claude_max_plan_enabled(capability_root=tmp_path / "credentials.json")
+    assert claude_max_plan_enabled(
+        {"STRINGBEAN_CLAUDE_MAX_PLAN": "yes"},
+        capability_root=tmp_path / "credentials.json",
+    )
+
+
 @pytest.mark.parametrize(
     ("legacy_model", "supported_alias"),
     [
         ("opus-4.8", "opus"),
+        ("fable-5", "sonnet"),
+        ("claude-fable5", "sonnet"),
     ],
 )
 def test_claude_adapter_repairs_legacy_model_in_explicit_command(
@@ -317,7 +566,7 @@ def test_claude_adapter_repairs_legacy_model_in_explicit_command(
 
 @pytest.mark.parametrize(
     "full_model",
-    ["fable", "claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+    ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
 )
 def test_claude_adapter_passes_real_full_model_names_through_unchanged(tmp_path: Path, full_model: str):
     from agent_relay.adapters import ClaudeAdapter
@@ -335,6 +584,70 @@ def test_claude_adapter_passes_real_full_model_names_through_unchanged(tmp_path:
     command = ClaudeAdapter(cfg).build_command("prompt", tmp_path)
 
     assert command[:3] == ["claude", "--model", full_model]
+
+
+@pytest.mark.parametrize("fable_model", ["fable", "claude-fable-5"])
+def test_claude_adapter_rejects_explicit_fable5_without_max_plan(tmp_path: Path, monkeypatch, fable_model: str):
+    from agent_relay.adapters import ClaudeAdapter
+
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+    cfg = AgentConfig(
+        name="explicit-claude",
+        adapter="claude",
+        model=fable_model,
+        role="advisor",
+        permissions="read_only",
+        command=["claude", "--model", fable_model],
+        prompt_transport="stdin",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        ClaudeAdapter(cfg).build_command("prompt", tmp_path)
+
+    message = str(excinfo.value)
+    assert "Claude Fable 5 requires detected Claude Max plan access or an explicit Claude Max plan opt-in" in message
+    assert "Stringbean did not detect Max entitlement" in message
+    assert "Use the portable 'sonnet' model" in message
+    assert "STRINGBEAN_CLAUDE_MAX_PLAN=1" in message
+
+
+def test_claude_adapter_allows_explicit_fable5_with_max_plan_opt_in(tmp_path: Path, monkeypatch):
+    from agent_relay.adapters import ClaudeAdapter
+
+    monkeypatch.setenv("STRINGBEAN_CLAUDE_MAX_PLAN", "1")
+    cfg = AgentConfig(
+        name="explicit-claude",
+        adapter="claude",
+        model="fable",
+        role="advisor",
+        permissions="read_only",
+        command=["claude", "--model=fable"],
+        prompt_transport="stdin",
+    )
+
+    command = ClaudeAdapter(cfg).build_command("prompt", tmp_path)
+
+    assert command[:2] == ["claude", "--model=fable"]
+
+
+def test_claude_adapter_allows_explicit_fable5_with_agent_max_plan_opt_in(tmp_path: Path, monkeypatch):
+    from agent_relay.adapters import ClaudeAdapter
+
+    monkeypatch.delenv("STRINGBEAN_CLAUDE_MAX_PLAN", raising=False)
+    cfg = AgentConfig(
+        name="explicit-claude",
+        adapter="claude",
+        model="fable",
+        role="advisor",
+        permissions="read_only",
+        command=["claude", "--model", "fable"],
+        prompt_transport="stdin",
+        environment_overrides={"STRINGBEAN_CLAUDE_MAX_PLAN": "1"},
+    )
+
+    command = ClaudeAdapter(cfg).build_command("prompt", tmp_path)
+
+    assert command[:3] == ["claude", "--model", "fable"]
 
 
 def test_claude_adapter_normalizes_final_stream_result_for_parser(tmp_path: Path):
